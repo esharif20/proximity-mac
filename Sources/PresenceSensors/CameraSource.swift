@@ -20,6 +20,10 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         var calibration: Calibration?
         /// Face widths collected while `calibrate()` runs; nil otherwise.
         var calibrationWidths: [Double]?
+        /// When calibration saw its first frame, so its 3 s window excludes camera warm-up.
+        var calibrationStart: Double?
+
+        var wantsCamera: Bool { mode != .off || calibrationWidths != nil }
     }
 
     private let state = Mutex(State())
@@ -41,30 +45,42 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
     }
 
     public func setMode(_ mode: SamplingMode) {
-        let running = state.withLock { s -> Bool in
+        state.withLock { s in
             s.mode = mode
             if s.calibrationWidths == nil { s.throttle = FrameThrottle(interval: FrameThrottle.interval(for: mode)) }
-            return mode != .off || s.calibrationWidths != nil
         }
-        setRunning(running)
+        reconcile()
     }
 
-    /// Samples about 3 s of frames while the person sits normally, then restores the previous mode.
+    static let calibrationSeconds = 3.0
+    /// Gives up if the camera delivers nothing for this long (no camera, or permission denied).
+    static let calibrationTimeout = 8.0
+
+    /// Samples about 3 s of frames, counted from the first delivered frame, then restores the previous mode.
     public func calibrate() async -> Calibration? {
         state.withLock { s in
             s.calibrationWidths = []
+            s.calibrationStart = nil
             s.throttle = FrameThrottle(interval: 0.1)
         }
-        setRunning(true)
-        try? await Task.sleep(for: .seconds(3))
-        let (widths, mode) = state.withLock { s -> ([Double], SamplingMode) in
+        reconcile()
+        let began = ProcessInfo.processInfo.systemUptime
+        while !Task.isCancelled {
+            let now = ProcessInfo.processInfo.systemUptime
+            let start = state.withLock { $0.calibrationStart }
+            if let start, now - start >= Self.calibrationSeconds { break }
+            if start == nil, now - began >= Self.calibrationTimeout { break }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        let widths = state.withLock { s -> [Double] in
             defer {
                 s.calibrationWidths = nil
+                s.calibrationStart = nil
                 s.throttle = FrameThrottle(interval: FrameThrottle.interval(for: s.mode))
             }
-            return (s.calibrationWidths ?? [], s.mode)
+            return s.calibrationWidths ?? []
         }
-        setRunning(mode != .off)
+        reconcile()
         return Distance.calibration(
             fromFaceWidths: widths, imageWidthPx: CameraSource.captureWidthPx, distanceCm: Calibration.defaultDistanceCm)
     }
@@ -74,11 +90,18 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
     /// The 640x480 preset is the lowest one Vision still finds faces with at desk distance.
     static let captureWidthPx = 640.0
 
-    private func setRunning(_ running: Bool) {
+    /// Brings the camera in line with the state as it is when this runs on `sessionQueue`, not when it
+    /// was asked for, so a stop and a start racing from two threads always settle on the latest state.
+    private func reconcile() {
         sessionQueue.async { [self] in
+            let (running, calibrating) = state.withLock { ($0.wantsCamera, $0.calibrationWidths != nil) }
             if running {
                 if session == nil { session = makeSession() }
-                if let session, !session.isRunning { session.startRunning() }
+                guard let session else { return }
+                if let device = (session.inputs.first as? AVCaptureDeviceInput)?.device {
+                    Self.setFrameRate(device, calibrating: calibrating)
+                }
+                if !session.isRunning { session.startRunning() }
             } else if let session {
                 // Stopping and dropping the session powers the camera down, so the light goes off.
                 session.stopRunning()
@@ -102,25 +125,38 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         guard session.canAddOutput(output) else { return nil }
         session.addOutput(output)
         session.commitConfiguration()
-        Self.useLowestFrameRate(device)
         return session
     }
 
-    /// Fewer frames from the sensor means less power, even though most are dropped anyway.
-    private static func useLowestFrameRate(_ device: AVCaptureDevice) {
-        guard let slowest = device.activeFormat.videoSupportedFrameRateRanges.min(by: { $0.minFrameRate < $1.minFrameRate }),
+    private static func setFrameRate(_ device: AVCaptureDevice, calibrating: Bool) {
+        let ranges = device.activeFormat.videoSupportedFrameRateRanges.map { (min: $0.minFrameRate, max: $0.maxFrameRate) }
+        guard let fps = sensorFrameRate(ranges: ranges, calibrating: calibrating),
               (try? device.lockForConfiguration()) != nil
         else { return }
-        device.activeVideoMinFrameDuration = slowest.maxFrameDuration
-        device.activeVideoMaxFrameDuration = slowest.maxFrameDuration
+        let duration = CMTime(value: 1000, timescale: CMTimeScale((fps * 1000).rounded()))
+        device.activeVideoMinFrameDuration = duration
+        device.activeVideoMaxFrameDuration = duration
         device.unlockForConfiguration()
+    }
+
+    /// Slow enough to save power, but several frames per sample so arrival jitter never skips a sample,
+    /// and fast enough during calibration to collect plenty of face widths in 3 s.
+    /// Built-in cameras often bottom out at 15 fps; some external ones go down to 1 fps.
+    static func sensorFrameRate(ranges: [(min: Double, max: Double)], calibrating: Bool) -> Double? {
+        let target = calibrating ? 10.0 : 5.0
+        if ranges.contains(where: { $0.min <= target && target <= $0.max }) { return target }
+        let above = ranges.filter { $0.min > target }.map(\.min).min()
+        return above ?? ranges.map(\.max).max()
     }
 
     // MARK: - Frames
 
     fileprivate func handle(_ sampleBuffer: CMSampleBuffer) {
         let now = ProcessInfo.processInfo.systemUptime
-        let (take, calibrating) = state.withLock { s in (s.throttle.shouldSample(at: now), s.calibrationWidths != nil) }
+        let (take, calibrating) = state.withLock { s in
+            if s.calibrationWidths != nil, s.calibrationStart == nil { s.calibrationStart = now }
+            return (s.throttle.shouldSample(at: now), s.calibrationWidths != nil)
+        }
         guard take, let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let imageWidth = Double(CVPixelBufferGetWidth(pixels))
 
@@ -200,9 +236,13 @@ struct FrameThrottle {
         }
     }
 
+    /// Frames arrive with jitter, so a frame a little early still counts; otherwise a camera running at
+    /// exactly the sample rate would lose every other sample.
+    static let earlyTolerance = 0.9
+
     mutating func shouldSample(at now: Double) -> Bool {
         guard let interval else { return false }
-        if let last, now - last < interval { return false }
+        if let last, now - last < interval * Self.earlyTolerance { return false }
         last = now
         return true
     }

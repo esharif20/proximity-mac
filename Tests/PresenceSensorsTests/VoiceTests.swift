@@ -1,3 +1,4 @@
+import Synchronization
 import Testing
 @testable import PresenceSensors
 
@@ -109,9 +110,132 @@ import Testing
         _ = MicUsage().micInUseByOtherApp()
     }
 
-    @Test func voiceSourceStopsCleanlyWithoutStarting() {
+}
+
+/// Counts what a fake opener was asked to do.
+final class VoiceProbe: Sendable {
+    struct Counts {
+        var access = 0
+        var opens = 0
+        var closes = 0
+        var isCurrent: (@Sendable () -> Bool)?
+        var interrupt: (@Sendable () -> Void)?
+        var text: (@Sendable (String) -> Void)?
+    }
+    let counts = Mutex(Counts())
+    let allowed: Bool
+    /// Seconds `open` takes, standing in for a model download.
+    let openDelay: Double
+
+    init(allowed: Bool = true, openDelay: Double = 0) {
+        self.allowed = allowed
+        self.openDelay = openDelay
+    }
+
+    var opener: VoiceSource.Opener {
+        VoiceSource.Opener(
+            requestAccess: { [self] in
+                counts.withLock { $0.access += 1 }
+                return allowed
+            },
+            open: { [self] isCurrent, onText, onInterrupted in
+                counts.withLock {
+                    $0.opens += 1
+                    $0.isCurrent = isCurrent
+                    $0.interrupt = onInterrupted
+                    $0.text = onText
+                }
+                if openDelay > 0 { try? await Task.sleep(for: .seconds(openDelay)) }
+                return { [self] in counts.withLock { $0.closes += 1 } }
+            })
+    }
+
+    var access: Int { counts.withLock { $0.access } }
+    var opens: Int { counts.withLock { $0.opens } }
+    var closes: Int { counts.withLock { $0.closes } }
+    var isCurrent: (@Sendable () -> Bool)? { counts.withLock { $0.isCurrent } }
+    var interrupt: (@Sendable () -> Void)? { counts.withLock { $0.interrupt } }
+    var text: (@Sendable (String) -> Void)? { counts.withLock { $0.text } }
+}
+
+func eventually(_ condition: () -> Bool) async -> Bool {
+    for _ in 0..<200 {
+        if condition() { return true }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return condition()
+}
+
+@Suite struct VoiceSourceLifecycleTests {
+    @Test func stopsCleanlyWithoutStarting() {
         let source = VoiceSource()
         source.onTranscript { _ in }
         source.stop()
+    }
+
+    @Test func deniedPermissionLetsALaterStartTryAgain() async {
+        let probe = VoiceProbe(allowed: false)
+        let source = VoiceSource(opener: probe.opener)
+        source.start()
+        #expect(await eventually { !source.isRunning })
+        source.start()
+        #expect(await eventually { probe.access == 2 })
+        #expect(probe.opens == 0)
+    }
+
+    @Test func stopDuringSetupTellsSetupToGiveUp() async throws {
+        let probe = VoiceProbe(openDelay: 0.3)
+        let source = VoiceSource(opener: probe.opener)
+        source.start()
+        #expect(await eventually { probe.opens == 1 })
+        let isCurrent = try #require(probe.isCurrent)
+        #expect(isCurrent())
+        source.stop()
+        #expect(!isCurrent(), "setup must see the stop before it opens the input")
+        // A session that finished opening anyway is closed straight away.
+        #expect(await eventually { probe.closes == 1 })
+        #expect(!source.isRunning)
+    }
+
+    @Test func aDeviceChangeReopensOnTheNewInput() async throws {
+        let probe = VoiceProbe()
+        let source = VoiceSource(opener: probe.opener)
+        source.start()
+        #expect(await eventually { probe.opens == 1 })
+        try await Task.sleep(for: .milliseconds(50))
+        let interrupt = try #require(probe.interrupt)
+        interrupt()
+        #expect(await eventually { probe.opens == 2 })
+        #expect(probe.closes == 1)
+        #expect(source.isRunning)
+        // A late notification from the old engine must not restart again.
+        interrupt()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(probe.opens == 2)
+        source.stop()
+        #expect(await eventually { probe.closes == 2 })
+    }
+
+    @Test func transcriptsReachTheHandler() async throws {
+        let probe = VoiceProbe()
+        let source = VoiceSource(opener: probe.opener)
+        let heard = Mutex<[String]>([])
+        source.onTranscript { text in heard.withLock { $0.append(text) } }
+        source.start()
+        #expect(await eventually { probe.text != nil })
+        let deliver = try #require(probe.text)
+        deliver("screen wake up")
+        #expect(heard.withLock { $0 } == ["screen wake up"])
+        source.stop()
+    }
+
+    @Test func releasingARunningSourceClosesTheMic() async throws {
+        let probe = VoiceProbe()
+        var source: VoiceSource? = VoiceSource(opener: probe.opener)
+        source?.start()
+        #expect(await eventually { probe.opens == 1 })
+        try await Task.sleep(for: .milliseconds(50))
+        source = nil
+        #expect(await eventually { probe.closes == 1 })
     }
 }
