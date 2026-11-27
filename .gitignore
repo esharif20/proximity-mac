@@ -1,0 +1,7 @@
+.build/
+.swiftpm/
+*.xcodeproj
+dist/
+bench/results/
+.tsf/lanes/
+.DS_Store
