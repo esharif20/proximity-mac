@@ -59,7 +59,7 @@ private func replay(_ name: String, _ settings: Settings = Settings()) throws ->
         let face = Observation(source: .camera, person: true, distanceCm: 60)
         // Said at the desk, so the face at 10 s does not wake; typing at 15 s does.
         let lines = [TraceLine(t: 0, event: .idle(seconds: 5)), TraceLine(t: 1, event: .command(.sleep)),
-                     TraceLine(t: 10, event: .observation(face)), TraceLine(t: 12, event: .idle(seconds: 16)),
+                     TraceLine(t: 10, event: .observation(face)), TraceLine(t: 12, event: .idle(seconds: 17)),
                      TraceLine(t: 15, event: .idle(seconds: 0))]
         let truth = [(t: 0.0, atDesk: false), (t: 10.0, atDesk: true)]
         #expect(TraceReplay.run(lines, truth: truth, settings: Settings()).maxWakeLatency == 5)
