@@ -197,10 +197,18 @@ private struct Driver {
         return s
     }
 
-    private static func randomEvent(_ g: inout Gen, idle: inout Double, dt: Double) -> Event {
+    /// `input` is set when the event is an idle reading that shows a keypress since the last reading.
+    private static func randomEvent(_ g: inout Gen, idle: inout Double, dt: Double, input: inout Bool) -> Event {
+        input = false
         switch Int.random(in: 0..<20, using: &g) {
         case 0..<7:
-            idle = Bool.random(using: &g) && Int.random(in: 0..<4, using: &g) == 0 ? 0 : idle + dt
+            if Int.random(in: 0..<8, using: &g) == 0 {
+                // A keypress somewhere since the last reading, so the new reading need not be below the old one.
+                idle = Double.random(in: 0...(dt - 0.06), using: &g)
+                input = true
+            } else {
+                idle += dt
+            }
             return .idle(seconds: idle)
         case 7..<12:
             return .observation(Observation(source: .camera, person: .random(using: &g),
@@ -218,11 +226,11 @@ private struct Driver {
             var g = Gen(seed: seed)
             let s = Self.randomSettings(&g)
             var engine = PresenceEngine(settings: s)
-            var t = 0.0, idle = 0.0
+            var t = 0.0, idle = 0.0, input = false
             for _ in 0..<400 {
                 let dt = Double.random(in: 0.1...5, using: &g)
                 t += dt
-                let event = Self.randomEvent(&g, idle: &idle, dt: dt)
+                let event = Self.randomEvent(&g, idle: &idle, dt: dt, input: &input)
                 let effects = engine.handle(event, at: t)
                 if engine.state == .present && idle < s.idleBeforeCheck {
                     let costly = effects.filter { $0 == .sample(.checking) || $0 == .sample(.watching) || $0 == .listen(true) }
@@ -232,16 +240,41 @@ private struct Driver {
         }
     }
 
+    @Test func inputInAnyStateLeavesCameraAndMicOff() {
+        for seed in UInt64(2000)..<2300 {
+            var g = Gen(seed: seed)
+            let s = Self.randomSettings(&g)
+            var engine = PresenceEngine(settings: s)
+            var t = 0.0, idle = 0.0, input = false
+            var sampling = SamplingMode.off, listening = false
+            for _ in 0..<400 {
+                let dt = Double.random(in: 0.1...5, using: &g)
+                t += dt
+                let before = engine.state
+                let event = Self.randomEvent(&g, idle: &idle, dt: dt, input: &input)
+                for e in engine.handle(event, at: t) {
+                    if case .sample(let m) = e { sampling = m }
+                    if case .listen(let on) = e { listening = on }
+                }
+                // Recent input, below both thresholds: whatever the state was, the person is at the keyboard.
+                if input && idle < s.idleBeforeCheck && idle < s.listenAfterIdle {
+                    #expect(sampling == .off && !listening, "seed \(seed) t \(t) from \(before) to \(engine.state)")
+                }
+            }
+        }
+    }
+
     @Test func effectsAreEmittedOnlyOnChange() {
         for seed in UInt64(1000)..<1300 {
             var g = Gen(seed: seed)
-            var engine = PresenceEngine(settings: Self.randomSettings(&g))
-            var t = 0.0, idle = 0.0
+            let s = Self.randomSettings(&g)
+            var engine = PresenceEngine(settings: s)
+            var t = 0.0, idle = 0.0, input = false
             var sampling = SamplingMode.off, listening = false, grace = false, dark = false
             for _ in 0..<400 {
                 let dt = Double.random(in: 0.1...5, using: &g)
                 t += dt
-                for e in engine.handle(Self.randomEvent(&g, idle: &idle, dt: dt), at: t) {
+                for e in engine.handle(Self.randomEvent(&g, idle: &idle, dt: dt, input: &input), at: t) {
                     switch e {
                     case .sample(let m): #expect(m != sampling, "seed \(seed)"); sampling = m
                     case .listen(let on): #expect(on != listening, "seed \(seed)"); listening = on
@@ -315,5 +348,55 @@ private struct Driver {
         _ = e.handle(.tick, at: 76)
         #expect(e.state == .away)
         #expect(e.handle(close, at: 80).first == .screensOn)
+    }
+}
+
+/// The three sequences from the GH-2 review, kept as regressions.
+@Suite struct PresenceEngineReviewTests {
+    @Test func inputDuringATimedHoldStopsListening() {
+        var e = PresenceEngine(settings: Settings())
+        _ = e.handle(.enable, at: 0)
+        _ = e.handle(.idle(seconds: 40), at: 40)
+        #expect(!e.handle(.command(.hold(minutes: 10)), at: 41).contains(.listen(false)))
+        #expect(e.handle(.idle(seconds: 0.2), at: 42) == [.listen(false)])
+        #expect(e.state == .hold(until: 641))
+    }
+
+    @Test func timedHoldDeadlineWithRecentInputIsPresent() {
+        var e = PresenceEngine(settings: Settings())
+        _ = e.handle(.enable, at: 0)
+        _ = e.handle(.idle(seconds: 1), at: 1)
+        _ = e.handle(.command(.hold(minutes: 1)), at: 1)
+        _ = e.handle(.idle(seconds: 0.3), at: 60)
+        #expect(e.handle(.idle(seconds: 0.2), at: 61) == [])
+        #expect(e.state == .present)
+        #expect(e.handle(.idle(seconds: 30.2), at: 91) == [.sample(.checking), .listen(true)])
+    }
+
+    @Test func timedHoldDeadlineWhileIdleChecks() {
+        var e = PresenceEngine(settings: Settings())
+        _ = e.handle(.enable, at: 0)
+        _ = e.handle(.idle(seconds: 40), at: 40)
+        _ = e.handle(.command(.hold(minutes: 1)), at: 40)
+        #expect(e.handle(.tick, at: 100).contains(.sample(.checking)))
+        #expect(e.state == .checking)
+    }
+
+    @Test func keypressAfterSleepWakesEvenWhenIdleReadsHigher() {
+        var e = PresenceEngine(settings: Settings())
+        _ = e.handle(.enable, at: 0)
+        _ = e.handle(.idle(seconds: 0.1), at: 10)
+        _ = e.handle(.command(.sleep), at: 10.3)
+        #expect(e.handle(.idle(seconds: 0.4), at: 11) == [.screensOn, .sample(.off), .listen(false)])
+        #expect(e.state == .present)
+    }
+
+    @Test func steadyIdleReadingsAreNotInput() {
+        var e = PresenceEngine(settings: Settings())
+        _ = e.handle(.enable, at: 0)
+        _ = e.handle(.idle(seconds: 5), at: 5)
+        _ = e.handle(.command(.sleep), at: 6)
+        #expect(e.handle(.idle(seconds: 7.02), at: 7) == [])
+        #expect(e.state == .away)
     }
 }

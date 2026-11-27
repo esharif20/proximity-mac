@@ -12,6 +12,8 @@ public struct PresenceEngine {
     private var screensDark = false
 
     private var lastIdle: Double = 0
+    /// When the last keyboard or mouse input happened, from the latest idle reading.
+    private var lastInputAt: Double?
     private var micBusy = false
     /// When the current check started; a check that finds nobody close for `absenceBeforeAway` leads to grace.
     private var checkStarted: Double = 0
@@ -39,7 +41,7 @@ public struct PresenceEngine {
         default:
             guard state != .off else {
                 // Facts still count while off, so enabling later starts from the real idle time.
-                if case .idle(let seconds) = event { lastIdle = seconds }
+                if case .idle(let seconds) = event { _ = recordIdle(seconds, at: now) }
                 if case .micBusy(let busy) = event { micBusy = busy }
                 return []
             }
@@ -57,9 +59,7 @@ public struct PresenceEngine {
     private mutating func react(to event: Event, at now: Double, _ out: inout [Effect]) {
         switch event {
         case .idle(let seconds):
-            let input = seconds < lastIdle
-            lastIdle = seconds
-            if input { userIsBack(now, &out) }
+            if recordIdle(seconds, at: now) { userIsBack(now, &out) }
             if state == .present, seconds >= settings.idleBeforeCheck, now >= recheckNotBefore {
                 startChecking(now, &out)
             }
@@ -91,6 +91,16 @@ public struct PresenceEngine {
         case .tick, .enable, .disable:
             break
         }
+    }
+
+    /// Stores the reading and says whether it shows new input. Comparing input times rather than
+    /// idle values catches a keypress between two small readings; the margin absorbs timer jitter.
+    private mutating func recordIdle(_ seconds: Double, at now: Double) -> Bool {
+        let inputAt = now - seconds
+        let isNew = lastInputAt.map { inputAt > $0 + 0.05 } ?? false
+        if isNew || lastInputAt == nil { lastInputAt = inputAt }
+        lastIdle = seconds
+        return isNew
     }
 
     /// Input means someone is at the keyboard.
@@ -145,7 +155,8 @@ public struct PresenceEngine {
         case .grace(let until) where now >= until:
             goAway(&out)
         case .hold(let until?) where now >= until:
-            startChecking(now, &out)
+            // Someone typing when the hold runs out is at the desk; checking now would time absence too early.
+            if lastIdle < settings.idleBeforeCheck { backAtDesk(now, &out) } else { startChecking(now, &out) }
         default:
             break
         }
@@ -171,8 +182,11 @@ public struct PresenceEngine {
             wanted = lastIdle >= settings.listenAfterIdle && lastIdle >= settings.idleBeforeCheck
         case .checking:
             wanted = lastIdle >= settings.listenAfterIdle
-        case .grace, .away, .hold:
+        case .grace, .away, .hold(until: nil):
             wanted = true
+        case .hold:
+            // A timed hold keeps the screens on for someone who may be typing; listen only once they stop.
+            wanted = lastIdle >= settings.listenAfterIdle
         }
         setListening(wanted && settings.voiceEnabled && !micBusy, &out)
     }
