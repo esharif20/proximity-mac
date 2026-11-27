@@ -8,6 +8,6 @@ struct Seams {
     var idle: any IdleReading
 
     static var live: Seams {
-        Seams(source: StandInSource(), display: StandInDisplay(), idle: StandInIdle())
+        Seams(source: StandInSource(), display: DisplayControl(), idle: IdleSource())
     }
 }
