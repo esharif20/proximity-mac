@@ -3,6 +3,8 @@ import Observation
 // Scoped imports: the contract's `Observation` struct would shadow the Observation module the
 // `@Observable` macro expands into.
 import enum PresenceCore.Command
+import enum PresenceCore.CommandParser
+import struct PresenceCore.PresenceEngine
 import enum PresenceCore.Effect
 import enum PresenceCore.Event
 import enum PresenceCore.PresenceState
@@ -14,8 +16,6 @@ import struct PresenceCore.TraceLine
 /// No presence or timing rule lives here; the engine decides and this class only acts.
 @MainActor @Observable
 final class Coordinator {
-    typealias Engine = StandInEngine
-    typealias Parser = StandInParser
 
     private(set) var state: PresenceState
     /// Monotonic seconds at the last tick, so countdowns in the UI refresh once a second.
@@ -48,7 +48,7 @@ final class Coordinator {
         }
     }
 
-    @ObservationIgnored private var engine: Engine
+    @ObservationIgnored private var engine: PresenceEngine
     @ObservationIgnored private let seams: Seams
     @ObservationIgnored private let store: SettingsStore
     @ObservationIgnored private var timer: Timer?
@@ -79,7 +79,7 @@ final class Coordinator {
         self.store = store
         self.bench = bench
         self.settings = settings
-        self.engine = Engine(settings: settings)
+        self.engine = PresenceEngine(settings: settings)
         self.log = FeatureLog()
         seams.camera.calibration = settings.calibration
         self.state = .off
@@ -135,7 +135,7 @@ final class Coordinator {
     }
 
     private func heard(_ transcript: String) {
-        guard let command = Parser.parse(transcript, triggerWord: settings.triggerWord) else { return }
+        guard let command = CommandParser.parse(transcript, triggerWord: settings.triggerWord) else { return }
         lastCommand = command
         send(.command(command))
     }
