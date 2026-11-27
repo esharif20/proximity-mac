@@ -57,15 +57,17 @@ swift /tmp/camcheck.swift
 
 ## Results
 
-Fill one row per display after running the check.
+Run on the person's MacBook with two external displays on the dock (neither is OLED).
 
-| Display | Connection | Goes to standby on Screens Off | Time to picture after wake |
-| ------- | ---------- | ------------------------------ | -------------------------- |
-| Built-in | internal | | |
-| External 1 | dock | | |
-| External 2 | dock | | |
+| Display | Connection | Goes to standby on Screens Off | Woke on `screensOn()` |
+| ------- | ---------- | ------------------------------ | --------------------- |
+| Built-in | internal | yes | yes |
+| External 1 | dock | yes | yes |
+| External 2 | dock | yes | yes |
 
-Camera frames delivered during 10 s of Screens Off: ___ (expect about 300 at 30 fps; 0 means the camera pauses and the Away watch needs another plan).
+`pmset displaysleepnow` turned off all three and the Mac stayed awake. Per-display time to picture was not timed; all woke without trouble.
+
+Camera frames delivered during 10 s of Screens Off: pending (expect about 300 at 30 fps; 0 means the camera pauses and the Away watch needs another plan).
 
 ## If a display does not go to standby
 

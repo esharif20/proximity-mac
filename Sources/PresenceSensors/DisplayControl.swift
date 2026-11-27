@@ -43,7 +43,7 @@ extension DisplayControl.Actions {
             if result == kIOReturnSuccess { IOPMAssertionRelease(assertion) }
         },
         lockSession: {
-            lockScreenFunction?()
+            _ = lockScreenFunction?()
         }
     )
 
