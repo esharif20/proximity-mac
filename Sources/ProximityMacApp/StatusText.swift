@@ -32,4 +32,12 @@ enum StatusText {
     static func minutesLeft(_ until: Double, _ now: Double) -> Int {
         max(0, Int(((until - now) / 60).rounded(.up)))
     }
+
+    static func command(_ command: Command) -> String {
+        switch command {
+        case .wake: "Wake up"
+        case .sleep: "Go to sleep"
+        case .hold(let minutes): "Keep on for \(minutes) min"
+        }
+    }
 }

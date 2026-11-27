@@ -2,6 +2,7 @@ import Foundation
 import Observation
 // Scoped imports: the contract's `Observation` struct would shadow the Observation module the
 // `@Observable` macro expands into.
+import enum PresenceCore.Command
 import enum PresenceCore.Effect
 import enum PresenceCore.Event
 import enum PresenceCore.PresenceState
@@ -14,6 +15,7 @@ import struct PresenceCore.TraceLine
 @MainActor @Observable
 final class Coordinator {
     typealias Engine = StandInEngine
+    typealias Parser = StandInParser
 
     private(set) var state: PresenceState
     /// Monotonic seconds at the last tick, so countdowns in the UI refresh once a second.
@@ -24,6 +26,8 @@ final class Coordinator {
     /// The latest distance the camera reported, for the live readout in Settings.
     private(set) var lastDistanceCm: Double?
     private(set) var isCalibrating = false
+    /// The last Command recognised, shown in the menu. The transcript itself is never kept.
+    private(set) var lastCommand: Command?
     let bench: BenchMode?
 
     var settings: Settings {
@@ -53,6 +57,7 @@ final class Coordinator {
     /// The rate the engine last asked for; a Settings preview may raise it but never replaces it.
     @ObservationIgnored private var engineMode: SamplingMode = .off
     @ObservationIgnored private var previewing = false
+    @ObservationIgnored private var micBusy: Bool?
 
     var isLogging: Bool {
         get { access(keyPath: \.isLogging); return store.featureLog }
@@ -85,6 +90,9 @@ final class Coordinator {
                 if let distance = observation.distanceCm { self?.lastDistanceCm = distance }
                 self?.send(.observation(observation))
             }
+        }
+        seams.voice.onTranscript { [weak self] transcript in
+            Task { @MainActor in self?.heard(transcript) }
         }
         startTimer()
 
@@ -126,6 +134,12 @@ final class Coordinator {
         }
     }
 
+    private func heard(_ transcript: String) {
+        guard let command = Parser.parse(transcript, triggerWord: settings.triggerWord) else { return }
+        lastCommand = command
+        send(.command(command))
+    }
+
     private func applySampling() {
         seams.camera.setMode(previewing && engineMode == .off ? .checking : engineMode)
     }
@@ -142,6 +156,12 @@ final class Coordinator {
 
     private func tick() {
         send(.idle(seconds: seams.idle.secondsSinceInput()))
+        // Only changes go to the engine, so the trace stays small and a call starting is one event.
+        let busy = seams.mic.micInUseByOtherApp()
+        if busy != micBusy {
+            micBusy = busy
+            send(.micBusy(busy))
+        }
         send(.tick)
     }
 
@@ -153,7 +173,10 @@ final class Coordinator {
         case .sample(let mode):
             engineMode = mode
             applySampling()
-        case .listen(let on): listening = on
+        case .listen(let on):
+            guard on != listening else { return }
+            listening = on
+            on ? seams.voice.start() : seams.voice.stop()
         case .showGrace(let seconds):
             graceUntil = now + Double(seconds)
             if !overlay.isShowing { overlay.show(GraceNotice(coordinator: self)) }

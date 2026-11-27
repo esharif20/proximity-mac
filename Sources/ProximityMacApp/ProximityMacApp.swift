@@ -11,7 +11,7 @@ struct ProximityMacApp: App {
         MenuBarExtra {
             MenuContent(coordinator: coordinator)
         } label: {
-            Image(systemName: StatusText.symbol(coordinator.state))
+            Image(systemName: coordinator.listening ? "waveform.circle.fill" : StatusText.symbol(coordinator.state))
                 .accessibilityLabel("Proximity Mac: \(StatusText.line(coordinator.state, now: coordinator.now))")
         }
 
@@ -28,6 +28,12 @@ private struct MenuContent: View {
 
     var body: some View {
         Text(StatusText.line(coordinator.state, now: coordinator.now))
+        if coordinator.listening {
+            Text("Listening")
+        }
+        if let command = coordinator.lastCommand {
+            Text("Last command: \(StatusText.command(command))")
+        }
         Toggle("On", isOn: $coordinator.isEnabled)
         if coordinator.isLogging {
             Button("That was wrong") { coordinator.markWrong() }

@@ -9,8 +9,11 @@ struct Seams {
     var camera: Camera
     var display: any DisplayControlling
     var idle: any IdleReading
+    var voice: any VoiceListening
+    var mic: any MicUsageReading
 
     static var live: Seams {
-        Seams(camera: Camera(), display: DisplayControl(), idle: IdleSource())
+        Seams(camera: Camera(), display: DisplayControl(), idle: IdleSource(),
+              voice: StandInVoice(), mic: StandInMic())
     }
 }

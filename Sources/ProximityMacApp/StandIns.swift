@@ -2,8 +2,8 @@ import Foundation
 import PresenceCore
 import Synchronization
 
-// Temporary stand-ins so the app builds and runs before `PresenceEngine` (core) and `CameraSource`
-// (sensors) land on main. Each is replaced by the real type in `Seams.live` and
+// Temporary stand-ins so the app builds and runs before `PresenceEngine` (core) and `CameraSource`, `VoiceSource`,
+// `MicUsage` (sensors) and `CommandParser` (core) land on main. Each is replaced by the real type in `Seams.live` and
 // `Coordinator.Engine`, then this file goes away.
 
 /// Mirrors the `PresenceEngine` API from the contract. It only follows the menu toggle and input,
@@ -46,4 +46,19 @@ final class StandInCamera: PresenceSource {
     func setMode(_ mode: SamplingMode) {}
     func onObservation(_ handler: @escaping @Sendable (Observation) -> Void) {}
     func calibrate() async -> Calibration? { nil }
+}
+
+final class StandInVoice: VoiceListening {
+    func start() {}
+    func stop() {}
+    func onTranscript(_ handler: @escaping @Sendable (String) -> Void) {}
+}
+
+struct StandInMic: MicUsageReading {
+    func micInUseByOtherApp() -> Bool { false }
+}
+
+/// Mirrors `CommandParser`. Recognises nothing, so no stand-in rule decides what was said.
+enum StandInParser {
+    static func parse(_ transcript: String, triggerWord: String) -> Command? { nil }
 }
