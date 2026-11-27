@@ -42,6 +42,13 @@ final class Coordinator {
     @ObservationIgnored private let seams: Seams
     @ObservationIgnored private let store: SettingsStore
     @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private let overlay = GraceOverlay()
+
+    /// The Trigger word as spoken at the start of a Command, for on-screen hints.
+    var triggerPhrase: String {
+        let word = settings.triggerWord.trimmingCharacters(in: .whitespaces)
+        return word.isEmpty ? "Screen" : word.prefix(1).uppercased() + word.dropFirst()
+    }
 
     init(seams: Seams = .live, store: SettingsStore = SettingsStore(), bench: BenchMode? = BenchMode(arguments: CommandLine.arguments)) {
         let settings = store.load()
@@ -96,8 +103,12 @@ final class Coordinator {
         case .lock: seams.display.lock()
         case .sample(let mode): seams.source.setMode(mode)
         case .listen(let on): listening = on
-        case .showGrace(let seconds): graceUntil = now + Double(seconds)
-        case .hideGrace: graceUntil = nil
+        case .showGrace(let seconds):
+            graceUntil = now + Double(seconds)
+            if !overlay.isShowing { overlay.show(GraceNotice(coordinator: self)) }
+        case .hideGrace:
+            graceUntil = nil
+            overlay.hide()
         }
     }
 }
