@@ -1,11 +1,17 @@
 import PresenceCore
+import ServiceManagement
 import SwiftUI
 
 struct SettingsView: View {
     @Bindable var coordinator: Coordinator
+    @State private var opensAtLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {
         Form {
+            Section {
+                Toggle("Open at login", isOn: $opensAtLogin)
+                    .onChange(of: opensAtLogin) { _, on in setOpensAtLogin(on) }
+            }
             Section("Presence") {
                 Stepper("Check after \(Int(coordinator.settings.idleBeforeCheck)) s idle",
                         value: $coordinator.settings.idleBeforeCheck, in: 10...600, step: 5)
@@ -54,5 +60,15 @@ struct SettingsView: View {
         .onDisappear { coordinator.setPreviewing(false) }
         .frame(width: 420)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func setOpensAtLogin(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+        } catch {
+            // Registration fails outside a bundled app (for example `swift run`); show the real state.
+        }
+        let actual = SMAppService.mainApp.status == .enabled
+        if actual != opensAtLogin { opensAtLogin = actual }
     }
 }
