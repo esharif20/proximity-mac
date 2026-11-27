@@ -100,7 +100,8 @@ import Testing
         var throttle = FrameThrottle(interval: 1)
         // 30 fps for 10 s.
         let taken = (0..<300).filter { throttle.shouldSample(at: Double($0) / 30) }.count
-        #expect(taken == 10)
+        // The early tolerance lets in up to about 10% more, still about one a second.
+        #expect((10...12).contains(taken))
         var off = FrameThrottle(interval: nil)
         #expect(!(0..<300).contains { off.shouldSample(at: Double($0)) })
     }
@@ -113,5 +114,37 @@ import Testing
         #expect(source.calibration == cal)
         #expect(source.kind == .camera)
         source.setMode(.off)
+    }
+
+    @Test(arguments: [(SamplingMode.checking, 1.0), (.watching, 2.0)])
+    func jitteredFramesAtTheSampleRateAreAllKept(mode: SamplingMode, period: Double) {
+        // A 1 fps external camera in checking: gaps jitter just under and over the interval.
+        var throttle = FrameThrottle(interval: FrameThrottle.interval(for: mode))
+        let jitter = [-0.004, 0.003, -0.002, 0.001, -0.003]
+        var t = 0.0
+        var taken = 0
+        for i in 0..<100 {
+            t += period + jitter[i % jitter.count]
+            if throttle.shouldSample(at: t) { taken += 1 }
+        }
+        #expect(taken == 100)
+    }
+
+    @Test func throttleStillDropsFramesWellInsideTheInterval() {
+        var throttle = FrameThrottle(interval: 2)
+        let taken = [0, 1, 1.7, 2].map { throttle.shouldSample(at: $0) }
+        #expect(taken == [true, false, false, true])
+    }
+
+    @Test func sensorRateLeavesSeveralFramesPerSampleOnASlowCamera() throws {
+        // This Mac's external camera reports 1-30 fps; the built-in one 15-30.
+        let external = [(min: 1.0, max: 30.0)]
+        let sampling = try #require(CameraSource.sensorFrameRate(ranges: external, calibrating: false))
+        #expect(sampling >= 2, "at least two frames per checking sample")
+        let calibrating = try #require(CameraSource.sensorFrameRate(ranges: external, calibrating: true))
+        #expect(calibrating * (CameraSource.calibrationSeconds - 0.5) >= 5 * 2, "comfortably more than the 5 widths calibration needs")
+        #expect(CameraSource.sensorFrameRate(ranges: [(min: 15, max: 30)], calibrating: false) == 15)
+        #expect(CameraSource.sensorFrameRate(ranges: [(min: 1, max: 3)], calibrating: true) == 3)
+        #expect(CameraSource.sensorFrameRate(ranges: [], calibrating: false) == nil)
     }
 }
