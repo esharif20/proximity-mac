@@ -56,6 +56,7 @@ final class Coordinator {
     @ObservationIgnored private let store: SettingsStore
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private let overlay = GraceOverlay()
+    @ObservationIgnored private let keepAwake = KeepAwake()
     @ObservationIgnored private let log: FeatureLog
     /// The rate the engine last asked for; a Settings preview may raise it but never replaces it.
     @ObservationIgnored private var engineMode: SamplingMode = .off
@@ -111,6 +112,7 @@ final class Coordinator {
 
         if let bench {
             state = bench.state
+            keepAwake.set(true)
             bench.effects.forEach(perform)
         } else if store.enabled {
             send(.enable)
@@ -122,7 +124,10 @@ final class Coordinator {
         guard bench == nil else { return }
         if logging { log.append(TraceLine(t: clock, event: event)) }
         let effects = engine.handle(event, at: clock)
-        if engine.state != state { state = engine.state }
+        if engine.state != state {
+            state = engine.state
+            keepAwake.set(state != .off)
+        }
         effects.forEach(perform)
         if showsCountdown || graceUntil != nil { now = clock }
     }
