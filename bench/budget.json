@@ -1,0 +1,10 @@
+{
+  "note": "10-minute averages on an M1 Pro. cpuPercent is the average share of one core, wakeupsPerSecond counts idle wakeups, memoryMB is the phys footprint.",
+  "regressionTolerance": 0.2,
+  "modes": {
+    "active":    { "cpuPercent": 0.1, "wakeupsPerSecond": 1, "memoryMB": 40 },
+    "checking":  { "cpuPercent": 2.0, "wakeupsPerSecond": 5, "memoryMB": 60 },
+    "away":      { "cpuPercent": 1.5, "wakeupsPerSecond": 5, "memoryMB": 60 },
+    "listening": { "cpuPercent": 1.0, "wakeupsPerSecond": 5, "memoryMB": 60 }
+  }
+}
