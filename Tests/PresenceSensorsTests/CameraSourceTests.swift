@@ -136,15 +136,29 @@ import Testing
         #expect(taken == [true, false, false, true])
     }
 
-    @Test func sensorRateLeavesSeveralFramesPerSampleOnASlowCamera() throws {
+    @Test func sensorRateIsTheSlowestWhileSamplingAndFastWhileCalibrating() throws {
         // This Mac's external camera reports 1-30 fps; the built-in one 15-30.
         let external = [(min: 1.0, max: 30.0)]
-        let sampling = try #require(CameraSource.sensorFrameRate(ranges: external, calibrating: false))
-        #expect(sampling >= 2, "at least two frames per checking sample")
+        #expect(CameraSource.sensorFrameRate(ranges: external, calibrating: false) == 1)
         let calibrating = try #require(CameraSource.sensorFrameRate(ranges: external, calibrating: true))
         #expect(calibrating * (CameraSource.calibrationSeconds - 0.5) >= 5 * 2, "comfortably more than the 5 widths calibration needs")
         #expect(CameraSource.sensorFrameRate(ranges: [(min: 15, max: 30)], calibrating: false) == 15)
+        #expect(CameraSource.sensorFrameRate(ranges: [(min: 15, max: 30), (min: 2, max: 60)], calibrating: false) == 2)
         #expect(CameraSource.sensorFrameRate(ranges: [(min: 1, max: 3)], calibrating: true) == 3)
         #expect(CameraSource.sensorFrameRate(ranges: [], calibrating: false) == nil)
+    }
+
+    @Test func smallestUsableFormatWins() {
+        let formats = [(width: 1920, height: 1080, minFps: 1.0), (640, 480, 15), (640, 480, 1), (192, 144, 1), (1280, 720, 1)]
+        #expect(CameraSource.smallestFormatIndex(formats) == 2)
+        #expect(CameraSource.smallestFormatIndex([(width: 160, height: 120, minFps: 1.0)]) == nil)
+        #expect(CameraSource.smallestFormatIndex([]) == nil)
+    }
+
+    @Test func oneFpsCameraStillGivesEveryCheckingSample() {
+        // At the slowest rate there is exactly one frame per checking sample, arriving with jitter.
+        var throttle = FrameThrottle(interval: FrameThrottle.interval(for: .checking))
+        let arrivals = (1...60).map { Double($0) + ($0.isMultiple(of: 2) ? -0.03 : 0.03) }
+        #expect(arrivals.filter { throttle.shouldSample(at: $0) }.count == 60)
     }
 }

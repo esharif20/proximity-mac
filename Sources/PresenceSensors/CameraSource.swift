@@ -31,6 +31,8 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
     private let frameQueue = DispatchQueue(label: "camera.frames")
     private var session: AVCaptureSession?
     private lazy var delegate = FrameDelegate(owner: self)
+    /// Built once and used only on `frameQueue`: rebuilding Vision requests per frame reloads their models.
+    private lazy var vision = VisionPipeline()
 
     public init() {}
 
@@ -116,11 +118,29 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         else { return nil }
         let session = AVCaptureSession()
         session.beginConfiguration()
-        session.sessionPreset = session.canSetSessionPreset(.vga640x480) ? .vga640x480 : .low
         guard session.canAddInput(input) else { return nil }
         session.addInput(input)
+        // The smallest format the device offers: fewer pixels to move and to analyse on every frame.
+        let formats = device.formats.map { format -> (width: Int, height: Int, minFps: Double) in
+            let size = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            let minFps = format.videoSupportedFrameRateRanges.map(\.minFrameRate).min() ?? 30
+            return (Int(size.width), Int(size.height), minFps)
+        }
+        if let index = Self.smallestFormatIndex(formats), (try? device.lockForConfiguration()) != nil {
+            device.activeFormat = device.formats[index]
+            device.unlockForConfiguration()
+        } else {
+            session.sessionPreset = session.canSetSessionPreset(.vga640x480) ? .vga640x480 : .low
+        }
         let output = AVCaptureVideoDataOutput()
         output.alwaysDiscardsLateVideoFrames = true
+        // The default output is 2vuy, which costs a conversion on every frame, sampled or not. The camera's
+        // own pixel format (420v on built-in cameras) is delivered as is, and Vision reads it directly.
+        // Measured on a bare session: 4.3% CPU with the default, 2.9% native.
+        let native = CMFormatDescriptionGetMediaSubType(device.activeFormat.formatDescription)
+        if output.availableVideoPixelFormatTypes.contains(native) {
+            output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: native]
+        }
         output.setSampleBufferDelegate(delegate, queue: frameQueue)
         guard session.canAddOutput(output) else { return nil }
         session.addOutput(output)
@@ -139,11 +159,25 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         device.unlockForConfiguration()
     }
 
-    /// Slow enough to save power, but several frames per sample so arrival jitter never skips a sample,
-    /// and fast enough during calibration to collect plenty of face widths in 3 s.
+    /// Faces stop being found reliably below this width at desk distance.
+    static let minUsableWidth = 320
+
+    /// The format with the fewest pixels, at least `minUsableWidth` wide; ties go to the lowest frame rate.
+    static func smallestFormatIndex(_ formats: [(width: Int, height: Int, minFps: Double)]) -> Int? {
+        formats.indices
+            .filter { formats[$0].width >= minUsableWidth }
+            .min { a, b in
+                let (fa, fb) = (formats[a], formats[b])
+                return (fa.width * fa.height, fa.minFps) < (fb.width * fb.height, fb.minFps)
+            }
+    }
+
+    /// The slowest rate the camera allows while sampling: the throttle's early tolerance keeps every
+    /// sample even at 1 fps. Calibration runs at 10 fps or more to collect plenty of face widths in 3 s.
     /// Built-in cameras often bottom out at 15 fps; some external ones go down to 1 fps.
     static func sensorFrameRate(ranges: [(min: Double, max: Double)], calibrating: Bool) -> Double? {
-        let target = calibrating ? 10.0 : 5.0
+        guard calibrating else { return ranges.map(\.min).min() }
+        let target = 10.0
         if ranges.contains(where: { $0.min <= target && target <= $0.max }) { return target }
         let above = ranges.filter { $0.min > target }.map(\.min).min()
         return above ?? ranges.map(\.max).max()
@@ -160,23 +194,19 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         guard take, let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let imageWidth = Double(CVPixelBufferGetWidth(pixels))
 
-        let faces = VNDetectFaceLandmarksRequest()
-        let bodies = VNDetectHumanRectanglesRequest()
-        bodies.upperBodyOnly = true
-        let requests: [VNRequest] = calibrating ? [faces] : [faces, bodies]
-        guard (try? VNImageRequestHandler(cvPixelBuffer: pixels, options: [:]).perform(requests)) != nil else { return }
-
-        let face = faces.results?.max(by: { $0.boundingBox.width < $1.boundingBox.width }).map {
-            FaceMeasure(
-                widthPx: $0.boundingBox.width * imageWidth,
-                yawDegrees: $0.yaw.map { $0.doubleValue * 180 / .pi },
-                pitchDegrees: $0.pitch.map { $0.doubleValue * 180 / .pi })
-        }
-        if calibrating {
-            if let face { state.withLock { $0.calibrationWidths?.append(face.widthPx * Self.captureWidthPx / imageWidth) } }
+        guard let face = vision.largestFace(in: pixels, imageWidth: imageWidth) else {
+            if calibrating { return }
+            // Bodies only when there is no face: a face already answers "person" and gives a better distance.
+            let bodyWidth = vision.widestUpperBody(in: pixels).map { $0 * imageWidth }
+            let (handler, calibration) = state.withLock { ($0.handler, $0.calibration) }
+            handler?(Self.observation(face: nil, bodyWidthPx: bodyWidth, imageWidthPx: imageWidth, calibration: calibration))
             return
         }
-        let bodyWidth = bodies.results?.map(\.boundingBox.width).max().map { $0 * imageWidth }
+        if calibrating {
+            state.withLock { $0.calibrationWidths?.append(face.widthPx * Self.captureWidthPx / imageWidth) }
+            return
+        }
+        let bodyWidth: Double? = nil
         let (handler, calibration) = state.withLock { ($0.handler, $0.calibration) }
         handler?(Self.observation(face: face, bodyWidthPx: bodyWidth, imageWidthPx: imageWidth, calibration: calibration))
     }
@@ -258,5 +288,37 @@ private final class FrameDelegate: NSObject, AVCaptureVideoDataOutputSampleBuffe
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         owner?.handle(sampleBuffer)
+    }
+}
+
+/// The two Vision requests and one sequence handler, reused for every frame.
+private final class VisionPipeline {
+    private let handler = VNSequenceRequestHandler()
+    private let faces: VNDetectFaceRectanglesRequest = {
+        // Revision 3 reports yaw and pitch from the rectangle pass alone, so landmarks are not needed.
+        let request = VNDetectFaceRectanglesRequest()
+        request.revision = VNDetectFaceRectanglesRequestRevision3
+        return request
+    }()
+    private let bodies: VNDetectHumanRectanglesRequest = {
+        let request = VNDetectHumanRectanglesRequest()
+        request.upperBodyOnly = true
+        return request
+    }()
+
+    func largestFace(in pixels: CVPixelBuffer, imageWidth: Double) -> CameraSource.FaceMeasure? {
+        guard (try? handler.perform([faces], on: pixels)) != nil,
+              let face = faces.results?.max(by: { $0.boundingBox.width < $1.boundingBox.width })
+        else { return nil }
+        return CameraSource.FaceMeasure(
+            widthPx: face.boundingBox.width * imageWidth,
+            yawDegrees: face.yaw.map { $0.doubleValue * 180 / .pi },
+            pitchDegrees: face.pitch.map { $0.doubleValue * 180 / .pi })
+    }
+
+    /// The widest upper body as a share of the image width.
+    func widestUpperBody(in pixels: CVPixelBuffer) -> Double? {
+        guard (try? handler.perform([bodies], on: pixels)) != nil else { return nil }
+        return bodies.results?.map { Double($0.boundingBox.width) }.max()
     }
 }
