@@ -17,8 +17,11 @@ import struct PresenceCore.TraceLine
 @MainActor @Observable
 final class Coordinator {
 
+    // Every write to an observed property redraws the menu bar item, so each one is written only
+    // when its value changes. That keeps the active mode near zero CPU.
     private(set) var state: PresenceState
-    /// Monotonic seconds at the last tick, so countdowns in the UI refresh once a second.
+    /// Monotonic seconds for the countdowns on screen. It moves only while a Grace countdown or a
+    /// timed Hold is showing; the rest of the time nothing on screen depends on it.
     private(set) var now: Double
     /// When the Grace countdown ends, while it is showing.
     private(set) var graceUntil: Double?
@@ -58,11 +61,18 @@ final class Coordinator {
     @ObservationIgnored private var engineMode: SamplingMode = .off
     @ObservationIgnored private var previewing = false
     @ObservationIgnored private var micBusy: Bool?
+    /// The engine's clock, updated on every event without redrawing anything.
+    @ObservationIgnored private var clock: Double
+    /// Mirrors the stored setting so the per-event check doesn't read UserDefaults.
+    @ObservationIgnored private var logging: Bool
 
     var isLogging: Bool {
-        get { access(keyPath: \.isLogging); return store.featureLog }
+        get { access(keyPath: \.isLogging); return logging }
         set {
-            withMutation(keyPath: \.isLogging) { store.featureLog = newValue }
+            withMutation(keyPath: \.isLogging) {
+                store.featureLog = newValue
+                logging = newValue
+            }
             if !newValue { log.close() }
         }
     }
@@ -83,7 +93,10 @@ final class Coordinator {
         self.log = FeatureLog()
         seams.camera.calibration = settings.calibration
         self.state = .off
-        self.now = ProcessInfo.processInfo.systemUptime
+        let start = ProcessInfo.processInfo.systemUptime
+        self.now = start
+        self.clock = start
+        self.logging = store.featureLog
 
         seams.camera.onObservation { [weak self] observation in
             Task { @MainActor in
@@ -105,12 +118,13 @@ final class Coordinator {
     }
 
     func send(_ event: Event) {
-        now = ProcessInfo.processInfo.systemUptime
+        clock = ProcessInfo.processInfo.systemUptime
         guard bench == nil else { return }
-        if isLogging { log.append(TraceLine(t: now, event: event)) }
-        let effects = engine.handle(event, at: now)
-        state = engine.state
+        if logging { log.append(TraceLine(t: clock, event: event)) }
+        let effects = engine.handle(event, at: clock)
+        if engine.state != state { state = engine.state }
         effects.forEach(perform)
+        if showsCountdown || graceUntil != nil { now = clock }
     }
 
     /// Marks the moment the person thought a decision was wrong, so the trace can be checked later.
@@ -154,15 +168,35 @@ final class Coordinator {
         self.timer = timer
     }
 
+    private var showsCountdown: Bool {
+        switch state {
+        case .grace, .hold(until: .some): true
+        default: false
+        }
+    }
+
     private func tick() {
-        send(.idle(seconds: seams.idle.secondsSinceInput()))
-        // Only changes go to the engine, so the trace stays small and a call starting is one event.
-        let busy = seams.mic.micInUseByOtherApp()
-        if busy != micBusy {
-            micBusy = busy
-            send(.micBusy(busy))
+        let idle = seams.idle.secondsSinceInput()
+        send(.idle(seconds: idle))
+        // The mic only matters when the engine could ask to listen, so skip the CoreAudio query
+        // while the person is typing. Only changes go to the engine, so a call starting is one event.
+        if mightListen(idle: idle) {
+            let busy = seams.mic.micInUseByOtherApp()
+            if busy != micBusy {
+                micBusy = busy
+                send(.micBusy(busy))
+            }
         }
         send(.tick)
+    }
+
+    private func mightListen(idle: Double) -> Bool {
+        guard settings.voiceEnabled else { return false }
+        switch state {
+        case .grace, .away, .hold: return true
+        case .off: return false
+        case .present, .checking: return idle >= settings.listenAfterIdle
+        }
     }
 
     private func perform(_ effect: Effect) {
@@ -178,9 +212,11 @@ final class Coordinator {
             listening = on
             on ? seams.voice.start() : seams.voice.stop()
         case .showGrace(let seconds):
-            graceUntil = now + Double(seconds)
+            now = clock
+            graceUntil = clock + Double(seconds)
             if !overlay.isShowing { overlay.show(GraceNotice(coordinator: self)) }
         case .hideGrace:
+            guard graceUntil != nil else { return }
             graceUntil = nil
             overlay.hide()
         }
