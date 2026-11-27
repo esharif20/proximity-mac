@@ -27,7 +27,6 @@ pmset displaysleepnow; sleep 15; caffeinate -u -t 1
 
 # 3. Wake latency: time from the wake call until displays report awake again.
 pmset displaysleepnow; sleep 10
-start=$(date +%s.%N 2>/dev/null || python3 -c 'import time;print(time.time())')
 caffeinate -u -t 1
 # Note the seconds until each monitor shows a picture; the OS-side wake is immediate,
 # the panel's own wake is what the person feels.
