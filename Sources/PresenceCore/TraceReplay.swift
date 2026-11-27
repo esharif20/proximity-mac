@@ -31,7 +31,6 @@ public enum TraceReplay {
 
         var report = TraceReport(falseAways: 0, missedAways: 0, maxWakeLatency: 0)
         var dark = false
-        var lastIdle = 0.0
         var lastInput = lines.first?.t ?? 0
 
         // The current spell away from the desk.
@@ -53,8 +52,8 @@ public enum TraceReplay {
 
             switch line.event {
             case .idle(let seconds):
-                if seconds < lastIdle { lastInput = t - seconds; evidence(t) }
-                lastIdle = seconds
+                // Same rule as the engine: input is the last-input time moving later.
+                if t - seconds > lastInput + 0.05 { lastInput = t - seconds; evidence(t) }
             case .observation(let o) where o.person && (o.distanceCm ?? 0) <= settings.deskRadiusCm:
                 if atDesk(t) { evidence(t) }
             case .command(.wake), .command(.hold):
