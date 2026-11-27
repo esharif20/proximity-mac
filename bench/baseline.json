@@ -1,0 +1,21 @@
+{
+  "note": "Measured 2026-11-27, 2-minute runs, release build, on the person's Mac. Wakeups unmeasured (no powermetrics). checking and away are over budget and are recorded as measured, not as targets.",
+  "modes": {
+    "active": {
+      "cpuPercent": 0.057,
+      "memoryMB": 19.0
+    },
+    "checking": {
+      "cpuPercent": 6.976,
+      "memoryMB": 136.88
+    },
+    "away": {
+      "cpuPercent": 5.475,
+      "memoryMB": 133.75
+    },
+    "listening": {
+      "cpuPercent": 0.846,
+      "memoryMB": 22.04
+    }
+  }
+}
