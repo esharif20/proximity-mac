@@ -17,6 +17,8 @@ public struct PresenceEngine {
     private var checkStarted: Double = 0
     /// After a close sighting the camera rests until this time.
     private var recheckNotBefore: Double = -.infinity
+    /// Set by "go to sleep" said at the desk: a close face must not undo it until the person has left once.
+    private var sleptAtDesk = false
 
     public init(settings: Settings) {
         self.settings = settings
@@ -62,7 +64,11 @@ public struct PresenceEngine {
                 startChecking(now, &out)
             }
         case .observation(let o):
-            guard o.person && (o.distanceCm ?? 0) <= settings.deskRadiusCm else { return }
+            guard o.person && (o.distanceCm ?? 0) <= settings.deskRadiusCm else {
+                sleptAtDesk = false
+                return
+            }
+            if state == .away && sleptAtDesk { return }
             switch state {
             case .checking, .grace, .away, .hold(until: nil):
                 backAtDesk(now, &out)
@@ -72,6 +78,7 @@ public struct PresenceEngine {
             }
         case .command(.sleep):
             goAway(&out)
+            sleptAtDesk = true
         case .command(.wake):
             switch settings.wakeUpMode {
             case .untilSleepOrDesk: startHold(until: nil, &out)
@@ -112,6 +119,7 @@ public struct PresenceEngine {
 
     private mutating func goAway(_ out: inout [Effect]) {
         state = .away
+        sleptAtDesk = false
         setGrace(false, &out)
         if !screensDark {
             screensDark = true

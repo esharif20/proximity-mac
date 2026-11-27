@@ -270,3 +270,50 @@ private struct Driver {
         #expect(e.state == .present)
     }
 }
+
+@Suite struct PresenceEngineSleepCommandTests {
+    private let close = Event.observation(Observation(source: .camera, person: true, distanceCm: 60))
+
+    private func sleptAtDesk() -> PresenceEngine {
+        var e = PresenceEngine(settings: Settings())
+        _ = e.handle(.enable, at: 0)
+        _ = e.handle(.idle(seconds: 4), at: 4)
+        _ = e.handle(.command(.sleep), at: 5)
+        return e
+    }
+
+    @Test func closeFaceDoesNotUndoSleepUntilThePersonHasLeft() {
+        var e = sleptAtDesk()
+        #expect(e.handle(close, at: 6) == [])
+        #expect(e.state == .away)
+        _ = e.handle(.observation(Observation(source: .camera, person: false)), at: 8)
+        #expect(e.handle(close, at: 20).prefix(2) == [.screensOn, .sample(.off)])
+        #expect(e.state == .present)
+    }
+
+    @Test func farSightingCountsAsLeft() {
+        var e = sleptAtDesk()
+        _ = e.handle(.observation(Observation(source: .camera, person: true, distanceCm: 300)), at: 8)
+        _ = e.handle(close, at: 20)
+        #expect(e.state == .present)
+    }
+
+    @Test func inputAndWakeAlwaysWake() {
+        var a = sleptAtDesk()
+        #expect(a.handle(.idle(seconds: 0), at: 6).first == .screensOn)
+        #expect(a.state == .present)
+        var b = sleptAtDesk()
+        #expect(b.handle(.command(.wake), at: 6).first == .screensOn)
+        #expect(b.state == .hold(until: nil))
+    }
+
+    @Test func automaticAwayStillWakesOnACloseFace() {
+        var e = sleptAtDesk()
+        _ = e.handle(.idle(seconds: 0), at: 6)
+        _ = e.handle(.idle(seconds: 30), at: 36)
+        _ = e.handle(.tick, at: 66)
+        _ = e.handle(.tick, at: 76)
+        #expect(e.state == .away)
+        #expect(e.handle(close, at: 80).first == .screensOn)
+    }
+}
