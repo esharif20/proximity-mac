@@ -103,7 +103,8 @@ final class VoiceSession: @unchecked Sendable {
             throw VoiceError.unsupportedLocale
         }
         let transcriber = SpeechTranscriber(locale: locale, preset: .transcription)
-        // The on-device model is a system asset; the OS fetches it once if this locale is missing.
+        // The on-device model is a system asset the OS fetches once if this locale is missing. This only
+        // runs from `start()`, which the engine asks for only when the person has voice on, never at launch.
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
             try await request.downloadAndInstall()
         }
