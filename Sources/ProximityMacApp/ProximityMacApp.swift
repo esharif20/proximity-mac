@@ -12,7 +12,7 @@ struct ProximityMacApp: App {
             MenuContent(coordinator: coordinator)
         } label: {
             Image(systemName: coordinator.listening ? "waveform.circle.fill" : StatusText.symbol(coordinator.state))
-                .accessibilityLabel("Proximity Mac: \(StatusText.line(coordinator.state, now: coordinator.now))")
+                .accessibilityLabel("Proximity Mac")
         }
 
         Window("Proximity Mac Settings", id: "settings") {
