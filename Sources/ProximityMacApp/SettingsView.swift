@@ -17,6 +17,16 @@ struct SettingsView: View {
                         value: $coordinator.settings.deskRadiusCm, in: 40...300, step: 10)
                 Toggle("Lock when away", isOn: $coordinator.settings.lockWhenAway)
             }
+            Section("Distance") {
+                LabeledContent("Distance now", value: coordinator.lastDistanceCm.map { "\(Int($0.rounded())) cm" } ?? "Not seen")
+                    .monospacedDigit()
+                LabeledContent("Calibration", value: coordinator.settings.calibration == nil ? "Not calibrated" : "Calibrated")
+                HStack {
+                    Button("Calibrate: sit normally") { Task { await coordinator.calibrate() } }
+                        .disabled(coordinator.isCalibrating)
+                    if coordinator.isCalibrating { ProgressView().controlSize(.small) }
+                }
+            }
             Section("Wake up") {
                 Picker("\"Wake up\" keeps screens on", selection: $coordinator.settings.wakeUpMode) {
                     Text("Until \"go to sleep\" or back at the desk").tag(WakeUpMode.untilSleepOrDesk)
@@ -32,8 +42,16 @@ struct SettingsView: View {
                 TextField("Trigger word", text: $coordinator.settings.triggerWord)
                     .disabled(!coordinator.settings.voiceEnabled)
             }
+            Section("Feature log") {
+                Toggle("Keep a feature log (numbers only)", isOn: $coordinator.isLogging)
+                Text("Saved on this Mac in Application Support. Never frames, sound or words.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
+        .onAppear { coordinator.setPreviewing(true) }
+        .onDisappear { coordinator.setPreviewing(false) }
         .frame(width: 420)
         .fixedSize(horizontal: false, vertical: true)
     }

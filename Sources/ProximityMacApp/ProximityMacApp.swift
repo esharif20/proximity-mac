@@ -29,6 +29,9 @@ private struct MenuContent: View {
     var body: some View {
         Text(StatusText.line(coordinator.state, now: coordinator.now))
         Toggle("On", isOn: $coordinator.isEnabled)
+        if coordinator.isLogging {
+            Button("That was wrong") { coordinator.markWrong() }
+        }
         Divider()
         Button("Settings…") {
             // A menu bar app is never frontmost on its own, so bring it forward or the window opens behind.

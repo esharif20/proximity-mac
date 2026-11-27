@@ -6,6 +6,7 @@ struct SettingsStore {
     private let defaults: UserDefaults
     private let settingsKey = "settings"
     private let enabledKey = "enabled"
+    private let featureLogKey = "featureLog"
 
     init(defaults: UserDefaults = .standard) { self.defaults = defaults }
 
@@ -25,5 +26,11 @@ struct SettingsStore {
     var enabled: Bool {
         get { defaults.object(forKey: enabledKey) as? Bool ?? true }
         nonmutating set { defaults.set(newValue, forKey: enabledKey) }
+    }
+
+    /// The opt-in feature log. Off unless the person turns it on.
+    var featureLog: Bool {
+        get { defaults.bool(forKey: featureLogKey) }
+        nonmutating set { defaults.set(newValue, forKey: featureLogKey) }
     }
 }

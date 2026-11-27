@@ -5,7 +5,9 @@ import Observation
 import enum PresenceCore.Effect
 import enum PresenceCore.Event
 import enum PresenceCore.PresenceState
+import enum PresenceCore.SamplingMode
 import struct PresenceCore.Settings
+import struct PresenceCore.TraceLine
 
 /// Runs the engine: feeds it idle time, ticks and observations, and executes the effects it returns.
 /// No presence or timing rule lives here; the engine decides and this class only acts.
@@ -19,6 +21,9 @@ final class Coordinator {
     /// When the Grace countdown ends, while it is showing.
     private(set) var graceUntil: Double?
     private(set) var listening = false
+    /// The latest distance the camera reported, for the live readout in Settings.
+    private(set) var lastDistanceCm: Double?
+    private(set) var isCalibrating = false
     let bench: BenchMode?
 
     var settings: Settings {
@@ -26,6 +31,7 @@ final class Coordinator {
             guard settings != oldValue else { return }
             store.save(settings)
             engine.update(settings: settings)
+            seams.camera.calibration = settings.calibration
         }
     }
 
@@ -43,6 +49,18 @@ final class Coordinator {
     @ObservationIgnored private let store: SettingsStore
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private let overlay = GraceOverlay()
+    @ObservationIgnored private let log: FeatureLog
+    /// The rate the engine last asked for; a Settings preview may raise it but never replaces it.
+    @ObservationIgnored private var engineMode: SamplingMode = .off
+    @ObservationIgnored private var previewing = false
+
+    var isLogging: Bool {
+        get { access(keyPath: \.isLogging); return store.featureLog }
+        set {
+            withMutation(keyPath: \.isLogging) { store.featureLog = newValue }
+            if !newValue { log.close() }
+        }
+    }
 
     /// The Trigger word as spoken at the start of a Command, for on-screen hints.
     var triggerPhrase: String {
@@ -57,11 +75,16 @@ final class Coordinator {
         self.bench = bench
         self.settings = settings
         self.engine = Engine(settings: settings)
+        self.log = FeatureLog()
+        seams.camera.calibration = settings.calibration
         self.state = .off
         self.now = ProcessInfo.processInfo.systemUptime
 
-        seams.source.onObservation { [weak self] observation in
-            Task { @MainActor in self?.send(.observation(observation)) }
+        seams.camera.onObservation { [weak self] observation in
+            Task { @MainActor in
+                if let distance = observation.distanceCm { self?.lastDistanceCm = distance }
+                self?.send(.observation(observation))
+            }
         }
         startTimer()
 
@@ -76,9 +99,35 @@ final class Coordinator {
     func send(_ event: Event) {
         now = ProcessInfo.processInfo.systemUptime
         guard bench == nil else { return }
+        if isLogging { log.append(TraceLine(t: now, event: event)) }
         let effects = engine.handle(event, at: now)
         state = engine.state
         effects.forEach(perform)
+    }
+
+    /// Marks the moment the person thought a decision was wrong, so the trace can be checked later.
+    func markWrong() {
+        log.markWrong(at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// While Settings is open the camera samples so the distance readout is live.
+    func setPreviewing(_ on: Bool) {
+        previewing = on
+        if !on { lastDistanceCm = nil }
+        applySampling()
+    }
+
+    func calibrate() async {
+        guard !isCalibrating else { return }
+        isCalibrating = true
+        defer { isCalibrating = false }
+        if let calibration = await seams.camera.calibrate() {
+            settings.calibration = calibration
+        }
+    }
+
+    private func applySampling() {
+        seams.camera.setMode(previewing && engineMode == .off ? .checking : engineMode)
     }
 
     private func startTimer() {
@@ -101,7 +150,9 @@ final class Coordinator {
         case .screensOff: seams.display.screensOff()
         case .screensOn: seams.display.screensOn()
         case .lock: seams.display.lock()
-        case .sample(let mode): seams.source.setMode(mode)
+        case .sample(let mode):
+            engineMode = mode
+            applySampling()
         case .listen(let on): listening = on
         case .showGrace(let seconds):
             graceUntil = now + Double(seconds)

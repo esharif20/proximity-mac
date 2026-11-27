@@ -1,5 +1,6 @@
 import Foundation
 import PresenceCore
+import Synchronization
 
 // Temporary stand-ins so the app builds and runs before `PresenceEngine` (core) and `CameraSource`
 // (sensors) land on main. Each is replaced by the real type in `Seams.live` and
@@ -32,8 +33,17 @@ struct StandInEngine {
     mutating func update(settings: Settings) { self.settings = settings }
 }
 
-final class StandInSource: PresenceSource {
+/// Mirrors `CameraSource`: the contract's `PresenceSource` plus calibration.
+final class StandInCamera: PresenceSource {
     let kind: SourceKind = .camera
+    private let stored = Mutex<Calibration?>(nil)
+
+    var calibration: Calibration? {
+        get { stored.withLock { $0 } }
+        set { stored.withLock { $0 = newValue } }
+    }
+
     func setMode(_ mode: SamplingMode) {}
     func onObservation(_ handler: @escaping @Sendable (Observation) -> Void) {}
+    func calibrate() async -> Calibration? { nil }
 }

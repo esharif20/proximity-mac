@@ -3,11 +3,14 @@ import PresenceSensors
 
 /// The hardware the Coordinator drives, gathered in one place so swapping in a real adapter is one line.
 struct Seams {
-    var source: any PresenceSource
+    /// Concrete because calibration is a camera feature, not part of `PresenceSource`.
+    typealias Camera = StandInCamera
+
+    var camera: Camera
     var display: any DisplayControlling
     var idle: any IdleReading
 
     static var live: Seams {
-        Seams(source: StandInSource(), display: DisplayControl(), idle: IdleSource())
+        Seams(camera: Camera(), display: DisplayControl(), idle: IdleSource())
     }
 }
