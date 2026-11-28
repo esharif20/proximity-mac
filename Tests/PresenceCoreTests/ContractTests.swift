@@ -27,3 +27,12 @@ import Testing
     let data = try JSONEncoder().encode(settings)
     #expect(try JSONDecoder().decode(Settings.self, from: data) == settings)
 }
+
+@Test func ownerFeaturesAreOffByDefaultAndSurviveOldSettings() throws {
+    let old = #"{"graceSeconds": 20}"#.data(using: .utf8)!
+    let settings = try JSONDecoder().decode(Settings.self, from: old)
+    #expect(settings.onlyWakeForMe == false)
+    #expect(settings.voiceNeedsMe == false)
+    #expect(settings.setupDone == false)
+    #expect(Observation(source: .camera, person: true).owner == nil)
+}

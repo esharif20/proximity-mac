@@ -27,3 +27,9 @@
 **Calibration**: recording the size of the person's face while they sit normally, so distances are measured for them.
 
 **Trace**: a recorded sequence of timed events, used to test and measure the decisions without a camera.
+
+**Setup**: the first-run walkthrough that shows the camera's view with the vision drawn on top, measures the Desk radius from where the person sits, leans back and lies in bed, tests a Command, and optionally enrols the Owner.
+
+**Owner**: the person whose Face signature is enrolled. With "Only wake for me" on, only the Owner's face wakes the screens from Away.
+
+**Face signature**: a short list of numbers (a face embedding) computed from the Owner's face during Setup. It is kept only in the Mac's Keychain, never as an image, and can be deleted in Settings. _Avoid_: Face ID, which is Apple's 3D system.

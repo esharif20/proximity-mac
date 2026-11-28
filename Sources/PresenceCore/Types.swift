@@ -20,12 +20,17 @@ public struct Observation: Codable, Sendable, Equatable {
     public var distanceCm: Double?
     /// Head yaw and pitch are within the "looking at the screen" limits, when the source can tell.
     public var facingScreen: Bool?
+    /// The closest face matched the Owner's Face signature. Nil when recognition is off or no face was measured.
+    public var owner: Bool?
 
-    public init(source: SourceKind, person: Bool, distanceCm: Double? = nil, facingScreen: Bool? = nil) {
+    public init(
+        source: SourceKind, person: Bool, distanceCm: Double? = nil, facingScreen: Bool? = nil, owner: Bool? = nil
+    ) {
         self.source = source
         self.person = person
         self.distanceCm = distanceCm
         self.facingScreen = facingScreen
+        self.owner = owner
     }
 }
 
@@ -134,6 +139,13 @@ public struct Settings: Codable, Sendable, Equatable {
     /// Minutes into Away after which the camera stops watching (overnight); input or "wake up" still wakes.
     public var stopWatchingAfterMinutes: Double = 15
     public var calibration: Calibration?
+    /// While Away, only a close face that matches the Owner wakes the screens. Input still wakes them for anyone.
+    public var onlyWakeForMe: Bool = false
+    /// Commands count only if the Owner was recognised within `voiceAfterSeenMinutes`.
+    public var voiceNeedsMe: Bool = false
+    public var voiceAfterSeenMinutes: Double = 30
+    /// The first-run Setup has been finished (or skipped) once.
+    public var setupDone: Bool = false
 
     public init() {}
 
@@ -156,6 +168,10 @@ public struct Settings: Codable, Sendable, Equatable {
         try load(.wakeUpHoldMinutes, into: &wakeUpHoldMinutes)
         try load(.stopWatchingAfterMinutes, into: &stopWatchingAfterMinutes)
         calibration = try c.decodeIfPresent(Calibration.self, forKey: .calibration)
+        try load(.onlyWakeForMe, into: &onlyWakeForMe)
+        try load(.voiceNeedsMe, into: &voiceNeedsMe)
+        try load(.voiceAfterSeenMinutes, into: &voiceAfterSeenMinutes)
+        try load(.setupDone, into: &setupDone)
     }
 }
 
@@ -163,7 +179,7 @@ extension Settings {
     private enum CodingKeys: String, CodingKey {
         case idleBeforeCheck, absenceBeforeAway, graceSeconds, recheckAfterSeen, deskRadiusCm, voiceEnabled
         case listenAfterIdle, triggerWord, lockWhenAway, wakeUpMode, wakeUpHoldMinutes, stopWatchingAfterMinutes
-        case calibration
+        case calibration, onlyWakeForMe, voiceNeedsMe, voiceAfterSeenMinutes, setupDone
     }
 }
 
