@@ -1,5 +1,6 @@
 import SwiftUI
 import enum PresenceCore.Command
+import struct PresenceSensors.LabFrame
 
 /// The first-run Setup window. Layout and motion follow docs/design/setup.md.
 struct SetupView: View {

@@ -1,4 +1,7 @@
 import SwiftUI
+import struct PresenceSensors.LabFrame
+import struct PresenceSensors.LabFace
+import struct PresenceSensors.LabHand
 
 /// The camera image with the vision drawn on top, in one Canvas so image and overlay share a single
 /// transform and redraw together once per frame. Nothing here animates: overlays track the frame 1:1.
@@ -80,13 +83,16 @@ struct VisionStage: View {
                 let index = 1 + finger * 4 + joint
                 guard index < hand.joints.count else { break }
                 let p = map.point(hand.joints[index])
-                bones.move(to: previous)
-                bones.addLine(to: p)
+                // A joint Vision could not see is NaN; skip the bone rather than draw to nowhere.
+                if p.x.isFinite, previous.x.isFinite {
+                    bones.move(to: previous)
+                    bones.addLine(to: p)
+                }
                 previous = p
             }
         }
         context.stroke(bones, with: .color(.white.opacity(0.6)), lineWidth: 1)
-        for joint in hand.joints {
+        for joint in hand.joints where joint.x.isFinite {
             let p = map.point(joint)
             context.fill(Path(ellipseIn: CGRect(x: p.x - 2, y: p.y - 2, width: 4, height: 4)), with: .color(.white))
         }

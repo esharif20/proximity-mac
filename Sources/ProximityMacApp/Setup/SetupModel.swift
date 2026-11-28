@@ -3,6 +3,8 @@ import Observation
 import enum PresenceCore.Command
 import enum PresenceCore.CommandParser
 import struct PresenceCore.Calibration
+import class PresenceSensors.VisionLab
+import struct PresenceSensors.LabFrame
 
 /// The Setup walkthrough's state. The vision runs only while the window is open; nothing it sees is
 /// kept beyond the latest frame.
@@ -69,6 +71,7 @@ final class SetupModel {
         running = true
         // Only one camera session at a time: the presence camera stands down while Setup watches.
         coordinator.setLabRunning(true)
+        lab.calibration = coordinator.settings.calibration
         lab.start { [weak self] frame in
             Task { @MainActor in self?.received(frame) }
         }
@@ -119,6 +122,7 @@ final class SetupModel {
             isCalibrating = false
             if let calibration {
                 coordinator.settings.calibration = calibration
+                lab.calibration = calibration
                 calibrated = true
             }
         }
