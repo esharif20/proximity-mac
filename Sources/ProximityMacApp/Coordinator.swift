@@ -34,6 +34,10 @@ final class Coordinator {
     private(set) var isCalibrating = false
     /// The last Command recognised, shown in the menu. The transcript itself is never kept.
     private(set) var lastCommand: Command?
+    /// A Face signature is in the Keychain, so the Owner settings can be turned on.
+    private(set) var hasFaceSignature = false
+    /// Shown briefly in the menu when a Command was ignored because the Owner was not seen.
+    private(set) var voiceNeedsFaceNotice = false
     let bench: BenchMode?
     /// The menu bar glyph. It redraws itself only when what it shows changes.
     @ObservationIgnored let icon = MenuBarIcon()
@@ -44,6 +48,9 @@ final class Coordinator {
             store.save(settings)
             engine.update(settings: settings)
             seams.camera.calibration = settings.calibration
+            if settings.onlyWakeForMe != oldValue.onlyWakeForMe || settings.voiceNeedsMe != oldValue.voiceNeedsMe {
+                applyOwner()
+            }
         }
     }
 
@@ -63,6 +70,9 @@ final class Coordinator {
     @ObservationIgnored private let overlay = GraceOverlay()
     @ObservationIgnored private let keepAwake = KeepAwake()
     @ObservationIgnored private let log: FeatureLog
+    @ObservationIgnored private let faceStore = FaceSignatureStore()
+    @ObservationIgnored private var faceSignature: FaceSignature?
+    @ObservationIgnored private var noticeTask: Task<Void, Never>?
     /// The rate the engine last asked for; a Settings preview may raise it but never replaces it.
     @ObservationIgnored private var engineMode: SamplingMode = .off
     /// Settings is open, so the camera samples for the live distance readout.
@@ -105,6 +115,7 @@ final class Coordinator {
         self.engine = PresenceEngine(settings: settings)
         self.log = FeatureLog()
         seams.camera.calibration = settings.calibration
+        self.faceSignature = faceStore.load()
         self.state = .off
         let start = ProcessInfo.processInfo.systemUptime
         self.now = start
@@ -121,6 +132,8 @@ final class Coordinator {
         seams.voice.onTranscript { [weak self] transcript in
             Task { @MainActor in self?.heard(transcript) }
         }
+        hasFaceSignature = faceSignature != nil
+        applyOwner()
         startTimer()
 
         if let bench, bench.pinsEngine {
@@ -144,6 +157,7 @@ final class Coordinator {
             refreshIcon()
         }
         effects.forEach(perform)
+        if case .command = event { noteIgnoredCommand() }
         if showsCountdown || graceUntil != nil { now = clock }
     }
 
@@ -190,8 +204,45 @@ final class Coordinator {
         openSetupWindow?()
     }
 
-    func saveFaceSignature(_ signature: FaceSignature) {
-        try? FaceSignatureStore().save(signature)
+    /// Keeps a new Face signature in the Keychain. Returns false if the Keychain refused it.
+    func saveFaceSignature(_ signature: FaceSignature) -> Bool {
+        do {
+            try faceStore.save(signature)
+        } catch {
+            return false
+        }
+        faceSignature = signature
+        hasFaceSignature = true
+        applyOwner()
+        return true
+    }
+
+    /// Removes the Face signature and turns off both Owner settings, which need it.
+    func deleteFaceSignature() {
+        faceStore.delete()
+        faceSignature = nil
+        hasFaceSignature = false
+        settings.onlyWakeForMe = false
+        settings.voiceNeedsMe = false
+        applyOwner()
+    }
+
+    /// The camera only compares faces when an Owner setting asks for it, so with both off no
+    /// embedding is ever computed.
+    private func applyOwner() {
+        let wanted = settings.onlyWakeForMe || settings.voiceNeedsMe
+        seams.camera.setOwner(wanted ? faceSignature : nil)
+    }
+
+    private func noteIgnoredCommand() {
+        guard engine.lastIgnoredCommand != nil else { return }
+        voiceNeedsFaceNotice = true
+        noticeTask?.cancel()
+        noticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            self?.voiceNeedsFaceNotice = false
+        }
     }
 
     func calibrate() async {

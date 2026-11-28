@@ -56,6 +56,9 @@ private struct MenuContent: View {
         if coordinator.listening {
             Text("Listening")
         }
+        if coordinator.voiceNeedsFaceNotice {
+            Text("Voice needs your face")
+        }
         if let command = coordinator.lastCommand {
             Text("Last command: \(StatusText.command(command))")
         }

@@ -137,8 +137,7 @@ final class SetupModel {
                 Task { @MainActor in self?.enrolSamples = count }
             }
             isEnrolling = false
-            if let signature {
-                coordinator.saveFaceSignature(signature)
+            if let signature, coordinator.saveFaceSignature(signature) {
                 enrolled = true
             }
         }

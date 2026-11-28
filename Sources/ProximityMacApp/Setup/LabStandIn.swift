@@ -5,7 +5,7 @@ import PresenceSensors
 import Synchronization
 
 // Stand-ins with the exact signatures of the plan's contract (VisionLab, LabFrame,
-// VoiceSource.onLevel) until the vision lane lands on main.
+// VoiceSource.onLevel, CameraSource.setOwner) until the vision lane lands on main.
 // Delete this file when they do; nothing else changes. The fake source draws no real camera image
 // and keeps nothing.
 
@@ -27,6 +27,10 @@ public struct LabFace: Sendable {
 public struct LabHand: Sendable {
     public var joints: [CGPoint]
     public var isLeft: Bool
+}
+
+extension CameraSource {
+    public func setOwner(_ signature: FaceSignature?) {}
 }
 
 extension VoiceSource {
