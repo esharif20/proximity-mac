@@ -34,20 +34,6 @@ public struct LabHand: Sendable {
     public var isLeft: Bool
 }
 
-// FaceSignature and FaceRecognizer stand in for GH-35 with the plan's signatures, so enrolment
-// compiles and is tested now. They are deleted when GH-35 lands on main.
-public struct FaceSignature: Codable, Sendable, Equatable {
-    public var vectors: [[Float]]
-    public var threshold: Float
-}
-
-public final class FaceRecognizer: Sendable {
-    public init() {}
-    public func embedding(of pixels: CVPixelBuffer, face: VNFaceObservation) -> [Float]? { nil }
-    public static func signature(from embeddings: [[Float]]) -> FaceSignature? { nil }
-    public static func matches(_ embedding: [Float], _ signature: FaceSignature) -> Bool { false }
-}
-
 /// The live vision engine behind Setup: face landmarks and pose, hands, upper body and distance on
 /// every frame the analysis keeps up with. It runs only while Setup shows it; the app turns the
 /// presence camera off first, since only one capture session may run at a time.
