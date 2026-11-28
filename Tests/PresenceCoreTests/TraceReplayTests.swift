@@ -19,7 +19,7 @@ private func replay(_ name: String, _ settings: Settings = Settings()) throws ->
 }
 
 @Suite struct TraceReplayTests {
-    static let atDesk = ["reading", "video", "walk_behind"]
+    static let atDesk = ["reading", "video", "walk_behind", "phone_at_desk"]
     static let leaving = ["walk_to_bed", "coming_back", "voice_hold_from_bed"]
 
     @Test(arguments: atDesk) func atDeskTracesNeverGoAway(name: String) throws {
@@ -63,5 +63,24 @@ private func replay(_ name: String, _ settings: Settings = Settings()) throws ->
                      TraceLine(t: 15, event: .idle(seconds: 0))]
         let truth = [(t: 0.0, atDesk: false), (t: 10.0, atDesk: true)]
         #expect(TraceReplay.run(lines, truth: truth, settings: Settings()).maxWakeLatency == 5)
+    }
+
+    @Test func lookingAtAPhoneNeverTurnsTheScreensOffInFiveMinutes() throws {
+        let lines = try jsonLines("phone_at_desk.jsonl", as: TraceLine.self)
+        var engine = PresenceEngine(settings: Settings())
+        _ = engine.handle(.enable, at: 0)
+        for line in lines where line.t <= 300 {
+            #expect(!engine.handle(line.event, at: line.t).contains(.screensOff), "t \(line.t)")
+        }
+    }
+
+    @Test func motionWithNobodyEverSeenStillGoesAway() throws {
+        let lines = try jsonLines("phone_at_desk.jsonl", as: TraceLine.self).map { line in
+            if case .observation(let o) = line.event, o.person {
+                return TraceLine(t: line.t, event: .observation(Observation(source: .camera, person: false, motion: true)))
+            }
+            return line
+        }
+        #expect(TraceReplay.run(lines, truth: [(t: 0, atDesk: true)], settings: Settings()).falseAways == 1)
     }
 }

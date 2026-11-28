@@ -53,6 +53,9 @@ private struct MenuContent: View {
 
     var body: some View {
         Text(StatusText.line(coordinator.state, now: coordinator.now))
+        if let why = coordinator.whyLine() {
+            Text(why)
+        }
         if coordinator.tooDarkToSee {
             Text("Too dark to see you")
         }

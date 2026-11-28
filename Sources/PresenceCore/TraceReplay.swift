@@ -54,7 +54,7 @@ public enum TraceReplay {
             case .idle(let seconds):
                 // Same rule as the engine: input is the last-input time moving later.
                 if t - seconds > lastInput + 0.05 { lastInput = t - seconds; evidence(t) }
-            case .observation(let o) where o.person && (o.distanceCm ?? 0) <= settings.deskRadiusCm:
+            case .observation(let o) where o.source != .ble && o.person && (o.distanceCm ?? 0) <= settings.deskRadiusCm:
                 if atDesk(t) { evidence(t) }
             case .command(.wake), .command(.hold):
                 // Asking for the screens from across the room is not a missed Away.

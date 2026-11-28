@@ -14,6 +14,30 @@ enum StatusText {
         }
     }
 
+    /// The menu's Why line for `PresenceEngine.reason`.
+    static func why(_ reason: PresenceReason, idleSeconds: Double, distanceCm: Double?, unseenSeconds: Double) -> String? {
+        switch reason {
+        case .turnedOff: nil
+        case .typing: "You typed \(duration(idleSeconds)) ago"
+        case .seenClose, .ownerSeen: distanceCm.map { "Face seen at \(Int($0.rounded())) cm" } ?? "Face seen"
+        case .phoneNear: "Your phone is near"
+        case .mediaPlaying: "A video is playing"
+        case .command: "Woken by voice"
+        case .holdCommand: "Held on by voice"
+        case .checking: "Looking for you"
+        case .nobodySeen: "Nobody seen for \(duration(unseenSeconds))"
+        case .phoneLeft: "Your phone left"
+        case .sleepCommand: "Turned off by voice"
+        case .stoppedWatching: "Camera stopped for the night"
+        }
+    }
+
+    /// "3 s" under a minute and a half, then whole minutes, so a night Away does not read "5412 s".
+    static func duration(_ seconds: Double) -> String {
+        let s = max(0, Int(seconds.rounded(.down)))
+        return s < 90 ? "\(s) s" : "\(s / 60) min"
+    }
+
     static func secondsLeft(_ until: Double, _ now: Double) -> Int {
         max(0, Int((until - now).rounded(.up)))
     }
