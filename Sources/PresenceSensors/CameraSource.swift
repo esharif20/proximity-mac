@@ -121,14 +121,15 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
     /// was asked for, so a stop and a start racing from two threads always settle on the latest state.
     private func reconcile() {
         sessionQueue.async { [self] in
-            let (running, calibrating) = state.withLock { ($0.wantsCamera, $0.calibrationWidths != nil) }
+            let (running, calibrating, mode) = state.withLock { ($0.wantsCamera, $0.calibrationWidths != nil, $0.mode) }
             if running {
                 if session == nil { session = makeSession() }
                 guard let session else { return }
-                if let device = (session.inputs.first as? AVCaptureDeviceInput)?.device {
-                    Self.setFrameRate(device, calibrating: calibrating)
-                }
                 if !session.isRunning { session.startRunning() }
+                // Set after starting: starting a session can put the device back on its default durations.
+                if let device = (session.inputs.first as? AVCaptureDeviceInput)?.device {
+                    Self.setFrameRate(device, mode: mode, calibrating: calibrating)
+                }
             } else if let session {
                 // Stopping and dropping the session powers the camera down, so the light goes off.
                 session.stopRunning()
@@ -173,15 +174,35 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         return session
     }
 
-    private static func setFrameRate(_ device: AVCaptureDevice, calibrating: Bool) {
+    private static func setFrameRate(_ device: AVCaptureDevice, mode: SamplingMode, calibrating: Bool) {
         let ranges = device.activeFormat.videoSupportedFrameRateRanges.map { (min: $0.minFrameRate, max: $0.maxFrameRate) }
-        guard let fps = sensorFrameRate(ranges: ranges, calibrating: calibrating),
+        guard let rates = frameRates(ranges: ranges, mode: mode, calibrating: calibrating),
               (try? device.lockForConfiguration()) != nil
         else { return }
-        let duration = CMTime(value: 1000, timescale: CMTimeScale((fps * 1000).rounded()))
-        device.activeVideoMinFrameDuration = duration
-        device.activeVideoMaxFrameDuration = duration
+        func duration(_ fps: Double) -> CMTime { CMTime(value: 1000, timescale: CMTimeScale((fps * 1000).rounded())) }
+        device.activeVideoMinFrameDuration = duration(rates.fastest)
+        device.activeVideoMaxFrameDuration = duration(rates.slowest)
         device.unlockForConfiguration()
+    }
+
+    /// The motion gate checks about 8 frames a second, so watching needs no more than that.
+    static let motionFrameRate = 8.0
+
+    /// Below this `Observation.brightness` the camera cannot see a person, so "nobody seen" means
+    /// "too dark to see you". Not yet tuned from a dark reading: see docs/spikes/display-and-camera.md.
+    public static let darkBrightness = 0.08
+
+    /// The frame rate range to give the device. Watching lets auto exposure stretch frames down to the
+    /// slowest rate the camera allows, so a dim room still gives a usable picture; it runs no faster than
+    /// the motion gate needs. Checking and calibration keep one fixed rate, as before.
+    static func frameRates(
+        ranges: [(min: Double, max: Double)], mode: SamplingMode, calibrating: Bool
+    ) -> (fastest: Double, slowest: Double)? {
+        guard let fixed = sensorFrameRate(ranges: ranges, calibrating: calibrating) else { return nil }
+        guard mode == .watching, !calibrating else { return (fixed, fixed) }
+        let fastest = ranges.contains { $0.min <= motionFrameRate && motionFrameRate <= $0.max }
+            ? motionFrameRate : max(fixed, ranges.filter { $0.max < motionFrameRate }.map(\.max).max() ?? fixed)
+        return (fastest, fixed)
     }
 
     /// Faces stop being found reliably below this width at desk distance.

@@ -67,7 +67,37 @@ Run on the person's MacBook with two external displays on the dock (neither is O
 
 `pmset displaysleepnow` turned off all three and the Mac stayed awake. Per-display time to picture was not timed; all woke without trouble.
 
-Camera frames delivered during 10 s of Screens Off: pending (expect about 300 at 30 fps; 0 means the camera pauses and the Away watch needs another plan).
+Camera frames delivered during 10 s of Screens Off: still pending. A reading needs Screens Off, and the builder may not
+turn the person's screens off, so the person runs the check above when convenient (expect about 150 at 15 fps; 0 means
+the camera pauses and the Away watch needs another plan).
+
+## Low light (GH-48)
+
+What the built-in camera (FaceTime HD Camera) allows, read with `AVCaptureDevice` on the person's Mac:
+
+| Property | Value |
+| -------- | ----- |
+| Formats at 640x480 or smaller | one, 640x480 |
+| Frame rate range | 15 to 30 fps |
+| Exposure modes (locked, auto, continuous, custom) | none supported on macOS |
+
+So auto exposure is the only control, and the longest frame it can use is 1/15 s. While watching, `CameraSource`
+now sets the device's frame durations to run between `motionFrameRate` (8 fps) and the slowest rate the camera
+allows, which lets auto exposure stretch frames in a dim room. On the built-in camera both ends are 15 fps, so nothing
+changes there; an external camera that goes down to 1 fps gets up to a 1 s exposure. Checking and calibration keep
+one fixed rate.
+
+Setting the durations before `startRunning()` did not hold: the session came up at 30 fps. They are now set after
+starting, and the camera delivers 14.7 fps while watching. `scripts/bench.sh away 2`: 3.46% camera-on CPU (4.05%
+before), 141 MB.
+
+### Too dark to see you
+
+`CameraSource.darkBrightness` is 0.08 and has not been tuned: no dark reading has been taken yet. The lit room read
+about 0.29 to 0.6 here. To tune it, turn on the feature log, make the room as dark as it gets at night with the
+screens off, and read the `brightness` of the camera observations logged while nobody is seen; set the threshold a
+little above that value.
+
 
 ## If a display does not go to standby
 

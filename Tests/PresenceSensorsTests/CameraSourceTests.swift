@@ -148,6 +148,30 @@ import Testing
         #expect(CameraSource.sensorFrameRate(ranges: [], calibrating: false) == nil)
     }
 
+    @Test func watchingLetsAutoExposureStretchFramesDownToTheSlowestRate() throws {
+        // This Mac's external camera: up to 8 fps for the motion gate, down to 1 fps when the room is dark.
+        let external = [(min: 1.0, max: 30.0)]
+        let watching = try #require(CameraSource.frameRates(ranges: external, mode: .watching, calibrating: false))
+        #expect(watching.fastest == CameraSource.motionFrameRate)
+        #expect(watching.slowest == 1)
+        // The built-in camera cannot go below 15 fps, so watching is fixed there.
+        let builtIn = try #require(CameraSource.frameRates(ranges: [(min: 15, max: 30)], mode: .watching, calibrating: false))
+        #expect(builtIn.fastest == 15 && builtIn.slowest == 15)
+    }
+
+    @Test func checkingAndCalibrationKeepAFixedRate() throws {
+        let external = [(min: 1.0, max: 30.0)]
+        let checking = try #require(CameraSource.frameRates(ranges: external, mode: .checking, calibrating: false))
+        #expect(checking.fastest == 1 && checking.slowest == 1)
+        let calibrating = try #require(CameraSource.frameRates(ranges: external, mode: .watching, calibrating: true))
+        #expect(calibrating.fastest == 10 && calibrating.slowest == 10)
+        #expect(CameraSource.frameRates(ranges: [], mode: .watching, calibrating: false) == nil)
+    }
+
+    @Test func tooDarkIsBelowARoomAtNight() {
+        #expect(CameraSource.darkBrightness > 0 && CameraSource.darkBrightness < 0.2)
+    }
+
     @Test func smallestUsableFormatWins() {
         let formats = [(width: 1920, height: 1080, minFps: 1.0), (640, 480, 15), (640, 480, 1), (192, 144, 1), (1280, 720, 1)]
         #expect(CameraSource.smallestFormatIndex(formats) == 2)
