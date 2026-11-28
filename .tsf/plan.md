@@ -1,43 +1,39 @@
-lane recognition: GH-34 GH-35 GH-41(Settings + README part)
-lane vision: GH-37 GH-38 GH-36
-lane app: GH-39 GH-40 GH-41
-skills recognition: write-swift tdd
-skills vision: write-swift
-skills app: write-swift apple-design emil-design-eng (person asked for both: read ~/.claude/skills/apple-design/SKILL.md and ~/.claude/skills/emil-design-eng/SKILL.md)
-seat recognition: lane-builder (biometric data in the Keychain, face alignment maths, engine gating)
-seat vision: lane-builder-standard
+lane detect: GH-46 GH-47 GH-48
+lane app: GH-49
+skills detect: write-swift tdd
+skills app: write-swift apple-design emil-design-eng
+seat detect: lane-builder (camera pipeline, Vision, hard detection logic)
 seat app: lane-builder-standard
-review: GH-35 GH-34 GH-37
+review: GH-46 GH-47
 
-# Proximity Mac M5 plan: Setup, Owner, icon
+# Proximity Mac M6 plan: robust detection
 
-Repo: github.com/esharif20/proximity-mac. macOS 26+, Swift 6 package. Xcode is now selected, so `swift test` works; `scripts/test.sh` still works too.
-Issues hold the full acceptance: `gh issue view <n> -R esharif20/proximity-mac`. Commit subjects start `GH-<n>: `. Decisions: ADR 0004 (docs/adr/0004-opt-in-face-signature.md), GLOSSARY Setup / Owner / Face signature.
-Each lane is one branch and one PR: after the first green commit `git push -u origin lane/<l>` and `gh pr create --base main --head lane/<l>`; body `## Why`, `## What`, `## Verification` with real check output. End each issue with a `lane <l> ready <sha>` or `blocked` line to the Lead.
+The person's first real test: standing at the desk and waving while Away did not wake the screens, and on return macOS asked for Touch ID (its own 5-minute lock delay). M6 makes detection faster and wider (motion gate, body pose, hands, low light) and explains the lock delay.
+Repo, PR flow and prose rules as before: one branch and PR per lane, `lane <l> ready <sha>` to the Lead.
 
 ## Issues, verify command
-- GH-34 (recognition) Engine owner gating, voice needs me. `scripts/test.sh --filter PresenceEngine`
-- GH-35 (recognition) SFace Core ML model, FaceRecognizer, FaceSignatureStore. `scripts/test.sh --filter FaceRecognizer`
-- GH-36 (vision) CameraSource fills Observation.owner (3-frame match). `scripts/test.sh --filter CameraSource`
-- GH-37 (vision) VisionLab live analysis, calibrate, enrolOwner. `scripts/test.sh --filter VisionLab`
-- GH-38 (vision) VoiceSource.onLevel. `scripts/test.sh --filter Voice`
-- GH-39 (app) Menu-bar icon. `swift build && scripts/bench.sh active 1`
-- GH-40 (app) Setup window, layout spec in docs/design/setup.md first. `swift build`
-- GH-41 (app) Owner wiring, Settings, README. `swift build && scripts/bundle.sh`
+- GH-46 (detect) Motion-gated vision, brightness per Observation. `scripts/test.sh --filter CameraSource && scripts/test.sh --filter MotionGate`
+- GH-47 (detect) Body pose for standing, hands for waving. `scripts/test.sh --filter CameraSource && scripts/test.sh --filter Distance`
+- GH-48 (detect) Low light: longer exposure while watching, `CameraSource.darkBrightness`. `scripts/test.sh --filter CameraSource`
+- GH-49 (app) Lock delay step in Setup and Settings, "Too dark to see you", README. `swift build && scripts/bundle.sh`
 
 ## Files each lane owns
-- recognition: `Sources/PresenceCore/PresenceEngine.swift`, `Tests/PresenceCoreTests/PresenceEngineTests.swift`, `Sources/PresenceSensors/FaceRecognizer.swift`, `Sources/PresenceSensors/FaceSignatureStore.swift`, `Sources/PresenceSensors/Resources/**`, `Tests/PresenceSensorsTests/FaceRecognizerTests.swift`, `scripts/convert-sface.sh`, `NOTICE`, `Package.swift` (the PresenceSensors resources line only), and for GH-41: `Sources/ProximityMacApp/SettingsView.swift`, `README.md`.
-- vision: `Sources/PresenceSensors/CameraSource.swift`, `Tests/PresenceSensorsTests/CameraSourceTests.swift`, `docs/spikes/camera-cost.md` (GH-36, moved from recognition), `Sources/PresenceSensors/VisionLab.swift`, `Tests/PresenceSensorsTests/VisionLabTests.swift`, `Sources/PresenceSensors/VoiceSource.swift`, `Tests/PresenceSensorsTests/VoiceTests.swift`.
-- app: `Sources/ProximityMacApp/**` except SettingsView.swift, `docs/design/**`, `Resources/**`, `scripts/bundle.sh`.
-- Lead only: `Sources/PresenceCore/Types.swift`, `Tests/PresenceCoreTests/ContractTests.swift`, `GLOSSARY.md`, `docs/adr/**`, `docs/ARCHITECTURE.md`, `scripts/test.sh`. Need a change there? `hc send` the Lead the exact line.
+- detect: `Sources/PresenceSensors/**`, `Sources/PresenceCore/Distance.swift`, `Tests/PresenceSensorsTests/**`, `Tests/PresenceCoreTests/DistanceTests.swift`, `docs/spikes/**`, `scripts/bench.sh`, `bench/**`.
+- app: `Sources/ProximityMacApp/**`, `README.md`, `Resources/**`, `scripts/bundle.sh`, `docs/design/**`.
+- Lead only: `Sources/PresenceCore/Types.swift`, `Tests/PresenceCoreTests/ContractTests.swift`, `GLOSSARY.md`, `docs/adr/**`, `docs/ARCHITECTURE.md`, `scripts/test.sh`.
 
-## Cross-lane dependencies (build against the contract, `git merge main` once it lands)
-- vision GH-37 `enrolOwner` calls `FaceRecognizer.embedding` / `.signature` (GH-35): stub behind the same signatures until it lands.
-- app GH-40 uses `VisionLab`, `LabFrame`, `VoiceSource.onLevel`: drive the UI from a fake frame source until vision lands.
-- GH-41 split: the app lane adds to Coordinator `var hasFaceSignature: Bool { get }`, `func deleteFaceSignature()` (deletes, turns both switches off), `func openSetup()` and the owner wiring (`camera.setOwner`); the recognition lane builds the SettingsView Owner section and README against those names.
-- app GH-41 uses `FaceSignatureStore`, `CameraSource.setOwner`, `PresenceEngine.lastIgnoredCommand` (recognition).
+## New contract (M6)
+- `Observation.brightness: Double?` (0..1 mean frame brightness, init param `brightness: Double? = nil`), already in Types.swift.
+- `public static let darkBrightness: Double` on `CameraSource` (GH-48); the app uses 0.08 until it lands.
+- The engine is unchanged: hands and bodies arrive as ordinary close Observations with `owner: nil`.
 
-## Shared contract
+## Code map (M6)
+- `Sources/PresenceSensors/CameraSource.swift`: `handle(_ sampleBuffer:)` about line 203 (throttle, owner check, face then body fallback), `observation(face:bodyWidthPx:imageWidthPx:calibration:)`, `FrameThrottle`, `sensorFrameRate` about 193, `makeSession`, `VisionPass.largestFace` / `widestUpperBody` at the end.
+- `Sources/PresenceCore/Distance.swift`: `estimate` 14, `calibration` 28.
+- `Sources/ProximityMacApp/Setup/`: SetupModel.swift (steps), SetupView.swift, RoomMap.swift, VisionOverlay.swift. `SettingsView.swift` Owner and Presence sections. `Coordinator.swift` holds `lastDistanceCm` from observations.
+
+## M5 contract (still current)
+
 Already in `Types.swift` (scaffold commit): `Observation.owner: Bool?` (init param `owner: Bool? = nil`), `Settings.onlyWakeForMe = false`, `voiceNeedsMe = false`, `voiceAfterSeenMinutes = 30`, `setupDone = false` (decoded with defaults).
 New in lanes (signatures fixed here):
 - `PresenceEngine.lastIgnoredCommand: Command? { get }` (GH-34).

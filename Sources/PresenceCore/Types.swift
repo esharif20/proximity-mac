@@ -22,15 +22,19 @@ public struct Observation: Codable, Sendable, Equatable {
     public var facingScreen: Bool?
     /// The closest face matched the Owner's Face signature. Nil when recognition is off or no face was measured.
     public var owner: Bool?
+    /// Mean brightness of the frame, 0 (black) to 1, so "too dark to see you" can be told apart from "nobody there".
+    public var brightness: Double?
 
     public init(
-        source: SourceKind, person: Bool, distanceCm: Double? = nil, facingScreen: Bool? = nil, owner: Bool? = nil
+        source: SourceKind, person: Bool, distanceCm: Double? = nil, facingScreen: Bool? = nil, owner: Bool? = nil,
+        brightness: Double? = nil
     ) {
         self.source = source
         self.person = person
         self.distanceCm = distanceCm
         self.facingScreen = facingScreen
         self.owner = owner
+        self.brightness = brightness
     }
 }
 
