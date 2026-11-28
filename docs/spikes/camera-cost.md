@@ -135,3 +135,38 @@ makes that pass a `.motion` one (body and hand pose too). Watching keeps its mot
 
 The baseline (bench/baseline.json) is 4.81%. `main` alone is now over twice that in the same room, so the rise came
 from something outside this lane and needs its own look.
+
+## Why Checking costs 10 to 11% (not the camera)
+
+Measured on the person's Mac (M1 Pro) with `--bench-mode checking`. `pmset -g therm` recorded no thermal or
+performance warning. Load averages were 3.9, 5.4 and 8.4 from builds in other lanes.
+
+- `ps -M` over 20 s: the whole app used 2.57 s of CPU (12.9%). The main thread used the most (7.5%), not the camera
+  frame queue.
+- `sample <pid> 10`: about 420 of the main thread's 5435 samples are not idle. 233 of them are
+  `-[NSStatusItem _updateReplicants]`, called from timers, through SwiftUI's `MenuBarExtraController` re-rendering
+  the label. The `camera.frames` queue has 163 samples; segmentation and face detection have under 100 each.
+- The cause is the Checking pulse in `MenuBarIcon` (GH-39). While Checking it swaps the menu bar image every 0.4 s
+  (`pulsePeriod / 6`), and each swap re-renders the status item and its copy on every menu bar. The bench holds
+  Checking for the whole run, so the pulse never stops. `bench/baseline.json` (4.81%) was measured at 01:13 on
+  2026-11-28, before GH-39 landed at 09:25.
+
+| Build, `scripts/bench.sh checking 2` | camera-on CPU | camera-on footprint |
+| ------------------------------------ | ------------- | ------------------- |
+| `main` at 30752b6 | 11.57% | 135.5 MB, FAIL |
+| `main` with segmentation, Checking pulse timer removed | 4.93% | 146.0 MB, PASS |
+
+The fix belongs to the app's menu bar icon, not to the camera: no pulse, or a much slower one, while Checking.
+
+The menu bar icon (`MenuBarIcon.swift`) now has a still glyph for every state and no timers: Checking shows a smaller,
+dimmer dot, and Grace a half-lit screen (the countdown itself is on the overlay). Load averages were 6.8, 5.2 and 7.0.
+
+| `scripts/bench.sh <mode> 2` | CPU | footprint | result |
+| --------------------------- | --- | --------- | ------ |
+| checking, camera-on | 4.87% | 144.6 MB | PASS |
+| active | 0.32% (budget 0.1%, baseline 0.05%) | 19.0 MB | FAIL |
+
+Active is not the icon: a 15 s `sample` shows it idle apart from `Coordinator.tick()`, where 166 of 184 timer samples
+are `MicUsage.micInUseByOtherApp()` asking CoreAudio for input processes. The bench sends no input, so idle grows and
+`mightListen` lets the query run every second. Most of those samples wait on a CoreAudio mach message, so the CPU it
+uses is smaller than the sample count suggests. That needs its own look in the Coordinator.
