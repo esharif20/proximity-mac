@@ -59,6 +59,7 @@ final class Coordinator {
             store.save(settings)
             engine.update(settings: settings)
             seams.camera.calibration = settings.calibration
+            seams.camera.deskRadiusCm = settings.deskRadiusCm
             if settings.onlyWakeForMe != oldValue.onlyWakeForMe || settings.voiceNeedsMe != oldValue.voiceNeedsMe {
                 applyOwner()
             }
@@ -126,6 +127,7 @@ final class Coordinator {
         self.engine = PresenceEngine(settings: settings)
         self.log = FeatureLog()
         seams.camera.calibration = settings.calibration
+        seams.camera.deskRadiusCm = settings.deskRadiusCm
         self.faceSignature = faceStore.load()
         self.state = .off
         let start = ProcessInfo.processInfo.systemUptime
