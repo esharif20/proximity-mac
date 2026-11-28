@@ -11,6 +11,9 @@ import enum PresenceCore.PresenceState
 import enum PresenceCore.SamplingMode
 import struct PresenceCore.Settings
 import struct PresenceCore.TraceLine
+import class PresenceSensors.VoiceSource
+import struct PresenceSensors.FaceSignature
+import struct PresenceSensors.FaceSignatureStore
 
 /// Runs the engine: feeds it idle time, ticks and observations, and executes the effects it returns.
 /// No presence or timing rule lives here; the engine decides and this class only acts.
@@ -62,7 +65,12 @@ final class Coordinator {
     @ObservationIgnored private let log: FeatureLog
     /// The rate the engine last asked for; a Settings preview may raise it but never replaces it.
     @ObservationIgnored private var engineMode: SamplingMode = .off
+    /// Settings is open, so the camera samples for the live distance readout.
     @ObservationIgnored private var previewing = false
+    /// Setup's VisionLab owns the camera, so the presence camera stays off.
+    @ObservationIgnored private var labRunning = false
+    /// While Setup's voice step shows, transcripts go to it instead of the engine.
+    @ObservationIgnored private var setupWords: ((String) -> Void)?
     @ObservationIgnored private var micBusy: Bool?
     /// The engine's clock, updated on every event without redrawing anything.
     @ObservationIgnored private var clock: Double
@@ -151,6 +159,41 @@ final class Coordinator {
         applySampling()
     }
 
+    /// Setup's VisionLab is using the camera. Only one capture session runs at a time, so the
+    /// presence camera turns off until Setup stops.
+    func setLabRunning(_ on: Bool) {
+        labRunning = on
+        applySampling()
+    }
+
+    /// Setup's voice step: the microphone listens and the words go to Setup, not the engine, so
+    /// trying "wake up" there does not change the state.
+    func startSetupVoice(onLevel: @escaping @MainActor (Float) -> Void, onWords: @escaping (String) -> Void) {
+        setupWords = onWords
+        (seams.voice as? VoiceSource)?.onLevel { level in
+            Task { @MainActor in onLevel(level) }
+        }
+        if !listening { seams.voice.start() }
+    }
+
+    func stopSetupVoice() {
+        guard setupWords != nil else { return }
+        setupWords = nil
+        (seams.voice as? VoiceSource)?.onLevel { _ in }
+        if !listening { seams.voice.stop() }
+    }
+
+    /// Set by the menu bar label, which holds the SwiftUI `openWindow` action.
+    @ObservationIgnored var openSetupWindow: (() -> Void)?
+
+    func openSetup() {
+        openSetupWindow?()
+    }
+
+    func saveFaceSignature(_ signature: FaceSignature) {
+        try? FaceSignatureStore().save(signature)
+    }
+
     func calibrate() async {
         guard !isCalibrating else { return }
         isCalibrating = true
@@ -165,13 +208,21 @@ final class Coordinator {
     }
 
     private func heard(_ transcript: String) {
+        if let setupWords {
+            setupWords(transcript)
+            return
+        }
         guard let command = CommandParser.parse(transcript, triggerWord: settings.triggerWord) else { return }
         lastCommand = command
         send(.command(command))
     }
 
     private func applySampling() {
-        seams.camera.setMode(previewing && engineMode == .off ? .checking : engineMode)
+        if labRunning {
+            seams.camera.setMode(.off)
+        } else {
+            seams.camera.setMode(previewing && engineMode == .off ? .checking : engineMode)
+        }
     }
 
     private func startTimer() {
@@ -227,7 +278,8 @@ final class Coordinator {
             guard on != listening else { return }
             listening = on
             refreshIcon()
-            on ? seams.voice.start() : seams.voice.stop()
+            // Setup's voice step keeps the microphone on until it closes.
+            if on { seams.voice.start() } else if setupWords == nil { seams.voice.stop() }
         case .showGrace(let seconds):
             now = clock
             graceUntil = clock + Double(seconds)
