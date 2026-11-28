@@ -1,4 +1,4 @@
-lane recognition: GH-34 GH-35
+lane recognition: GH-34 GH-35 GH-41(Settings + README part)
 lane vision: GH-37 GH-38 GH-36
 lane app: GH-39 GH-40 GH-41
 skills recognition: write-swift tdd
@@ -26,14 +26,15 @@ Each lane is one branch and one PR: after the first green commit `git push -u or
 - GH-41 (app) Owner wiring, Settings, README. `swift build && scripts/bundle.sh`
 
 ## Files each lane owns
-- recognition: `Sources/PresenceCore/PresenceEngine.swift`, `Tests/PresenceCoreTests/PresenceEngineTests.swift`, `Sources/PresenceSensors/FaceRecognizer.swift`, `Sources/PresenceSensors/FaceSignatureStore.swift`, `Sources/PresenceSensors/Resources/**`, `Tests/PresenceSensorsTests/FaceRecognizerTests.swift`, `scripts/convert-sface.sh`, `NOTICE`, `Package.swift` (the PresenceSensors resources line only).
+- recognition: `Sources/PresenceCore/PresenceEngine.swift`, `Tests/PresenceCoreTests/PresenceEngineTests.swift`, `Sources/PresenceSensors/FaceRecognizer.swift`, `Sources/PresenceSensors/FaceSignatureStore.swift`, `Sources/PresenceSensors/Resources/**`, `Tests/PresenceSensorsTests/FaceRecognizerTests.swift`, `scripts/convert-sface.sh`, `NOTICE`, `Package.swift` (the PresenceSensors resources line only), and for GH-41: `Sources/ProximityMacApp/SettingsView.swift`, `README.md`.
 - vision: `Sources/PresenceSensors/CameraSource.swift`, `Tests/PresenceSensorsTests/CameraSourceTests.swift`, `docs/spikes/camera-cost.md` (GH-36, moved from recognition), `Sources/PresenceSensors/VisionLab.swift`, `Tests/PresenceSensorsTests/VisionLabTests.swift`, `Sources/PresenceSensors/VoiceSource.swift`, `Tests/PresenceSensorsTests/VoiceTests.swift`.
-- app: `Sources/ProximityMacApp/**`, `docs/design/**`, `README.md`, `Resources/**`, `scripts/bundle.sh`.
+- app: `Sources/ProximityMacApp/**` except SettingsView.swift, `docs/design/**`, `Resources/**`, `scripts/bundle.sh`.
 - Lead only: `Sources/PresenceCore/Types.swift`, `Tests/PresenceCoreTests/ContractTests.swift`, `GLOSSARY.md`, `docs/adr/**`, `docs/ARCHITECTURE.md`, `scripts/test.sh`. Need a change there? `hc send` the Lead the exact line.
 
 ## Cross-lane dependencies (build against the contract, `git merge main` once it lands)
 - vision GH-37 `enrolOwner` calls `FaceRecognizer.embedding` / `.signature` (GH-35): stub behind the same signatures until it lands.
 - app GH-40 uses `VisionLab`, `LabFrame`, `VoiceSource.onLevel`: drive the UI from a fake frame source until vision lands.
+- GH-41 split: the app lane adds to Coordinator `var hasFaceSignature: Bool { get }`, `func deleteFaceSignature()` (deletes, turns both switches off), `func openSetup()` and the owner wiring (`camera.setOwner`); the recognition lane builds the SettingsView Owner section and README against those names.
 - app GH-41 uses `FaceSignatureStore`, `CameraSource.setOwner`, `PresenceEngine.lastIgnoredCommand` (recognition).
 
 ## Shared contract
