@@ -618,6 +618,35 @@ private func closeFace(owner: Bool?) -> Event {
         #expect(d.at(90, .command(.sleep)).contains(.screensOff))
     }
 
+    @Test func ignoredCommandAfterTheCutoffWatchesAgainForTheOwner() {
+        var s = voiceNeedsMe()
+        s.onlyWakeForMe = true
+        var d = Driver(s)
+        d.toAway()
+        #expect(d.at(1000, .tick) == [.sample(.off)])
+        // The Owner said a Command but has not been seen: the camera must look so the next one can count.
+        #expect(d.at(1010, .command(.wake)) == [.sample(.watching)])
+        #expect(d.state == .away)
+        #expect(d.engine.lastIgnoredCommand == .wake)
+        #expect(d.at(1010 + 899, .tick) == [], "the cutoff restarts from the ignored Command")
+        #expect(d.at(1010 + 900, .tick) == [.sample(.off)])
+    }
+
+    @Test func ignoredCommandWhileWatchingRestartsTheCutoff() {
+        var d = Driver(voiceNeedsMe())
+        d.toAway()
+        #expect(d.at(500, .command(.sleep)) == [])
+        #expect(d.at(970, .tick) == [])
+        #expect(d.at(1400, .tick) == [.sample(.off)])
+    }
+
+    @Test func ignoredCommandOutsideAwayChangesNothing() {
+        var d = Driver(voiceNeedsMe())
+        d.toChecking()
+        #expect(d.at(31, .command(.hold(minutes: 5))) == [])
+        #expect(d.state == .checking)
+    }
+
     @Test func commandsWorkWithoutVoiceNeedsMe() {
         var d = Driver()
         #expect(d.at(5, .command(.sleep)).contains(.screensOff))
