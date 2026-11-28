@@ -225,11 +225,15 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
             let moved = grid.map { s.motion.update($0) } ?? false
             if let grid { s.brightness = grid.brightness }
             // The frames right after a sample finish its owner check, whatever the throttle says.
-            if s.ownerCheck != nil { return (true, false, true, s.signature, s.brightness, moved) }
+            if s.ownerCheck != nil {
+                if moved { s.schedule.noteMotion() }
+                return (true, false, true, s.signature, s.brightness, moved)
+            }
             if s.calibrationWidths != nil {
                 return (s.throttle.shouldSample(at: now), true, false, s.signature, s.brightness, moved)
             }
-            return (s.schedule.shouldRun(at: now, moved: moved), false, false, s.signature, s.brightness, moved)
+            let pass = s.schedule.shouldRun(at: now, moved: moved)
+            return (pass != nil, false, false, s.signature, s.brightness, pass == .motion)
         }
         guard take else { return }
         vision.dropIdlePoses()
@@ -388,25 +392,41 @@ struct VisionSchedule {
     /// About 4 passes a second while something moves: a short wave is caught, and the cost stays bounded.
     static let motionInterval = 0.25
 
+    /// A motion pass runs the body and hand passes too; a still pass only looks for a face and a body box.
+    enum Pass: Equatable { case still, motion }
+
     private var slow: FrameThrottle
     private var fast: FrameThrottle
+    /// Motion the cap or an owner check held back. The gate has already moved past those frames, so
+    /// dropping it would lose a short wave; it runs on the first frame the cap allows instead.
+    private var pendingMotion = false
 
     init(mode: SamplingMode) {
         slow = FrameThrottle(interval: FrameThrottle.interval(for: mode))
         fast = FrameThrottle(interval: mode == .off ? nil : Self.motionInterval)
     }
 
-    mutating func shouldRun(at now: Double, moved: Bool) -> Bool {
-        guard slow.interval != nil else { return false }
-        if moved {
-            guard fast.shouldSample(at: now) else { return false }
+    /// nil when this frame is skipped.
+    mutating func shouldRun(at now: Double, moved: Bool) -> Pass? {
+        guard slow.interval != nil else { return nil }
+        if moved || pendingMotion {
+            guard fast.shouldSample(at: now) else {
+                pendingMotion = true
+                return nil
+            }
+            pendingMotion = false
             // A motion pass counts as the slow sample too, so a still scene waits a full interval after it.
             slow.mark(at: now)
-            return true
+            return .motion
         }
-        guard slow.shouldSample(at: now) else { return false }
+        guard slow.shouldSample(at: now) else { return nil }
         fast.mark(at: now)
-        return true
+        return .still
+    }
+
+    /// Motion seen on a frame that went to something else, such as an owner check.
+    mutating func noteMotion() {
+        if slow.interval != nil { pendingMotion = true }
     }
 }
 
