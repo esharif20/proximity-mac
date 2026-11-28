@@ -19,6 +19,31 @@ import Testing
         #expect(Distance.estimate(faceWidthPx: 100, imageWidthPx: 640, calibration: cal) == 55)
     }
 
+    @Test func shouldersUseThePinholeModelAt36Centimetres() {
+        // Focal length 714.07 px across 1000 px: 36 cm shoulders 428.4 px apart are 60 cm away.
+        let d = Distance.estimate(shoulderWidthPx: 428.4, imageWidthPx: 1000, calibration: nil)
+        #expect(abs(d - 60.0) < 0.1)
+    }
+
+    @Test func handsUseThePinholeModelAt10Centimetres() {
+        // A 10 cm wrist-to-middle-knuckle length 119 px long is 60 cm away.
+        let d = Distance.estimate(handLengthPx: 119.0, imageWidthPx: 1000, calibration: nil)
+        #expect(abs(d - 60.0) < 0.1)
+    }
+
+    @Test func shouldersAndHandsFollowTheFaceCalibration() {
+        // A person whose face is wider than average reads nearer; their body is assumed to scale the same way.
+        let cal = Calibration(faceWidthPx: 150, imageWidthPx: 640, distanceCm: 60)
+        #expect(abs(Distance.estimate(shoulderWidthPx: 360, imageWidthPx: 640, calibration: cal) - 60) < 0.001)
+        #expect(abs(Distance.estimate(handLengthPx: 100, imageWidthPx: 640, calibration: cal) - 60) < 0.001)
+        #expect(abs(Distance.estimate(shoulderWidthPx: 180, imageWidthPx: 640, calibration: cal) - 120) < 0.001)
+    }
+
+    @Test func zeroSizedJointsAreInfinitelyFar() {
+        #expect(Distance.estimate(shoulderWidthPx: 0, imageWidthPx: 640, calibration: nil) == .infinity)
+        #expect(Distance.estimate(handLengthPx: -3, imageWidthPx: 640, calibration: nil) == .infinity)
+    }
+
     @Test func zeroWidthFaceIsInfinitelyFar() {
         #expect(Distance.estimate(faceWidthPx: 0, imageWidthPx: 1000, calibration: nil) == .infinity)
     }

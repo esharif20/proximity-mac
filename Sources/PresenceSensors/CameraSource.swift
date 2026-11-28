@@ -4,7 +4,7 @@ import Synchronization
 import Vision
 
 /// The camera as a presence source: a low-resolution capture that runs only while sampling, with Vision
-/// face landmarks and upper-body detection on about one frame a second or less.
+/// face, body pose and hand pose on a few frames a second at most, and only when something moves.
 ///
 /// Frames never leave this file: each one is analysed in memory and dropped, never stored or logged.
 ///
@@ -219,17 +219,20 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         // Locking a frame's pixels costs about 0.3 ms, so the grid is taken on a few frames a second, not all.
         let wantsGrid = state.withLock { $0.gridThrottle.shouldSample(at: now) }
         let grid = wantsGrid ? LumaGrid(sampling: pixels) : nil
-        let (take, calibrating, continuing, signature, brightness) = state.withLock { s in
+        let (take, calibrating, continuing, signature, brightness, moved) = state.withLock { s in
             if s.calibrationWidths != nil, s.calibrationStart == nil { s.calibrationStart = now }
             if let check = s.ownerCheck, check.isStale(at: now) { s.ownerCheck = nil }
             let moved = grid.map { s.motion.update($0) } ?? false
             if let grid { s.brightness = grid.brightness }
             // The frames right after a sample finish its owner check, whatever the throttle says.
-            if s.ownerCheck != nil { return (true, false, true, s.signature, s.brightness) }
-            if s.calibrationWidths != nil { return (s.throttle.shouldSample(at: now), true, false, s.signature, s.brightness) }
-            return (s.schedule.shouldRun(at: now, moved: moved), false, false, s.signature, s.brightness)
+            if s.ownerCheck != nil { return (true, false, true, s.signature, s.brightness, moved) }
+            if s.calibrationWidths != nil {
+                return (s.throttle.shouldSample(at: now), true, false, s.signature, s.brightness, moved)
+            }
+            return (s.schedule.shouldRun(at: now, moved: moved), false, false, s.signature, s.brightness, moved)
         }
         guard take else { return }
+        vision.dropIdlePoses()
         let imageWidth = Double(CVPixelBufferGetWidth(pixels))
 
         if continuing, let signature {
@@ -242,11 +245,8 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
 
         guard let face = vision.largestFace(in: pixels, imageWidth: imageWidth) else {
             if calibrating { return }
-            // Bodies only when there is no face: a face already answers "person" and gives a better distance.
-            let bodyWidth = vision.widestUpperBody(in: pixels).map { $0 * imageWidth }
             let (handler, calibration) = state.withLock { ($0.handler, $0.calibration) }
-            handler?(Self.observation(
-                face: nil, bodyWidthPx: bodyWidth, imageWidthPx: imageWidth, calibration: calibration, brightness: brightness))
+            handler?(withoutFace(pixels, moved: moved, calibration: calibration, brightness: brightness))
             return
         }
         if calibrating {
@@ -263,6 +263,27 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         let match = ownerMatches(pixels, face: face.observation, signature: signature)
         state.withLock { $0.ownerCheck = OwnerCheck(observation: observation, started: now) }
         finishOwnerCheck(match)
+    }
+
+    /// Bodies and hands only when there is no face: a face already answers "person" and gives a better distance.
+    /// On motion frames only, body pose first, since it sees a torso with the head above the frame, then
+    /// hands, since a hand that counts is a wave. Someone who just stood up or waved has moved, and an empty
+    /// still room then costs only the face and upper-body passes. The upper-body box comes last.
+    private func withoutFace(
+        _ pixels: CVPixelBuffer, moved: Bool, calibration: Calibration?, brightness: Double?
+    ) -> Observation {
+        let imageWidth = Double(CVPixelBufferGetWidth(pixels))
+        if moved, let body = vision.bodyJoints(in: pixels),
+           let observation = Self.observation(body: body, imageWidthPx: imageWidth, calibration: calibration, brightness: brightness) {
+            return observation
+        }
+        if moved, let observation = Self.observation(
+            hands: vision.handJoints(in: pixels), imageWidthPx: imageWidth, calibration: calibration, brightness: brightness) {
+            return observation
+        }
+        let bodyWidth = vision.widestUpperBody(in: pixels).map { $0 * imageWidth }
+        return Self.observation(
+            face: nil, bodyWidthPx: bodyWidth, imageWidthPx: imageWidth, calibration: calibration, brightness: brightness)
     }
 
     /// Records one frame's answer and delivers the held sample once the check has decided.
@@ -315,7 +336,7 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         }
         let faceEquivalentPx = face?.widthPx ?? (bodyWidthPx ?? 0) * faceToShouldersRatio
         let estimate = Distance.estimate(faceWidthPx: faceEquivalentPx, imageWidthPx: imageWidthPx, calibration: calibration)
-        let distance = estimate.isFinite ? min(max(estimate, 0), farCm) : farCm
+        let distance = clamped(estimate)
         var facing: Bool?
         if let yaw = face?.yawDegrees, let pitch = face?.pitchDegrees {
             facing = abs(yaw) <= maxYawDegrees && abs(pitch) <= maxPitchDegrees
@@ -437,7 +458,7 @@ private final class FrameDelegate: NSObject, AVCaptureVideoDataOutputSampleBuffe
     }
 }
 
-/// The two Vision requests and one sequence handler, reused for every frame.
+/// The Vision requests and one sequence handler, reused for every frame.
 private final class VisionPipeline {
     private let handler = VNSequenceRequestHandler()
     private let faces: VNDetectFaceRectanglesRequest = {
@@ -451,6 +472,28 @@ private final class VisionPipeline {
         request.upperBodyOnly = true
         return request
     }()
+
+    /// Built on first use and dropped after `poseIdleSeconds` without use, so a camera that always finds a
+    /// face, or a still empty room, does not keep the pose requests and their own handler around.
+    private var poses: PoseRequests?
+    private var posesUsedAt = 0.0
+    static let poseIdleSeconds = 30.0
+
+    func bodyJoints(in pixels: CVPixelBuffer) -> BodyJoints? { usePoses().bodyJoints(in: pixels) }
+    func handJoints(in pixels: CVPixelBuffer) -> [HandJoints] { usePoses().handJoints(in: pixels) }
+
+    /// Called on every Vision pass.
+    func dropIdlePoses() {
+        if poses != nil, ProcessInfo.processInfo.systemUptime - posesUsedAt > Self.poseIdleSeconds { poses = nil }
+    }
+
+    private func usePoses() -> PoseRequests {
+        posesUsedAt = ProcessInfo.processInfo.systemUptime
+        if let poses { return poses }
+        let made = PoseRequests()
+        poses = made
+        return made
+    }
 
     /// Built on first use, so a Mac without an owner signature never loads the landmarks model.
     private lazy var landmarks = VNDetectFaceLandmarksRequest()
