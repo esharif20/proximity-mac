@@ -1067,3 +1067,23 @@ private func linked(onlyWakeForMe: Bool = false) -> Settings {
         #expect(checked == 60_000)
     }
 }
+
+@Test func aBluetoothReadingWhileOffNeverCountsAsTheOwner() {
+    var settings = Settings()
+    settings.voiceNeedsMe = true
+    var engine = PresenceEngine(settings: settings)
+    _ = engine.handle(.observation(Observation(source: .ble, person: false, owner: true, rssi: -50)), at: 0)
+    _ = engine.handle(.enable, at: 1)
+    #expect(engine.handle(.command(.sleep), at: 2).contains(.screensOff) == false)
+}
+
+@Test func theReasonStopsBlamingMediaOnceItStops() {
+    var engine = PresenceEngine(settings: Settings())
+    _ = engine.handle(.enable, at: 0)
+    _ = engine.handle(.idle(seconds: 0), at: 0)
+    _ = engine.handle(.mediaPlaying(true), at: 1)
+    _ = engine.handle(.idle(seconds: 40), at: 41)
+    #expect(engine.reason == .mediaPlaying)
+    _ = engine.handle(.mediaPlaying(false), at: 42)
+    #expect(engine.reason != .mediaPlaying)
+}

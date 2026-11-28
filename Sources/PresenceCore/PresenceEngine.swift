@@ -76,8 +76,7 @@ public struct PresenceEngine {
                 if case .micBusy(let busy) = event { micBusy = busy }
                 if case .mediaPlaying(let playing) = event { mediaPlaying = playing }
                 if case .observation(let o) = event {
-                    noteOwner(o, at: now)
-                    if o.source == .ble { notePhone(o, at: now) }
+                    if o.source == .ble { notePhone(o, at: now) } else { noteOwner(o, at: now) }
                 }
                 return []
             }
@@ -158,6 +157,8 @@ public struct PresenceEngine {
             // `advanceDeadlines` ends a running check or grace; Away is left alone so a video that
             // autoplays in the dark never lights the room.
             mediaPlaying = playing
+            // Once the media stops, the menu must not keep blaming it.
+            if !mediaKeepsOn, state == .present, reason == .mediaPlaying { reason = .typing }
         case .tick, .enable, .disable:
             break
         }
