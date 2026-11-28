@@ -1,5 +1,5 @@
 {
-  "note": "Measured 2026-11-28 on the person's Mac, release build: checking and away 2 minutes (camera-on seconds only), listening 2 minutes, reading 10 minutes, active from the 2026-11-27 run. Wakeups unmeasured (no powermetrics).",
+  "note": "Measured 2026-11-28 on the person's Mac, release build: checking and away 2 minutes (camera-on seconds only), listening 2 minutes, reading 10 minutes, active from the latest 1-minute run. Wakeups unmeasured (no powermetrics).",
   "modes": {
     "active": {
       "cpuPercent": 0.049,
