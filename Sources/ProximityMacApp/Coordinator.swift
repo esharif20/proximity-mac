@@ -60,6 +60,7 @@ final class Coordinator {
             engine.update(settings: settings)
             seams.camera.calibration = settings.calibration
             seams.camera.deskRadiusCm = settings.deskRadiusCm
+            if settings.keepBuiltInOn != oldValue.keepBuiltInOn { applyKeepBuiltInOn() }
             if settings.onlyWakeForMe != oldValue.onlyWakeForMe || settings.voiceNeedsMe != oldValue.voiceNeedsMe {
                 applyOwner()
             }
@@ -81,6 +82,7 @@ final class Coordinator {
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private let overlay = GraceOverlay()
     @ObservationIgnored private let keepAwake = KeepAwake()
+    @ObservationIgnored private let monitorsOff: MonitorsOff
     @ObservationIgnored private let log: FeatureLog
     @ObservationIgnored private let faceStore = FaceSignatureStore()
     @ObservationIgnored private var faceSignature: FaceSignature?
@@ -128,6 +130,8 @@ final class Coordinator {
         self.log = FeatureLog()
         seams.camera.calibration = settings.calibration
         seams.camera.deskRadiusCm = settings.deskRadiusCm
+        seams.display.keepBuiltInOn = settings.keepBuiltInOn
+        self.monitorsOff = MonitorsOff(display: seams.display)
         self.faceSignature = faceStore.load()
         self.state = .off
         let start = ProcessInfo.processInfo.systemUptime
@@ -146,6 +150,7 @@ final class Coordinator {
         seams.voice.onTranscript { [weak self] transcript in
             Task { @MainActor in self?.heard(transcript) }
         }
+        monitorsOff.onInput = { [weak self] in self?.inputSeen() }
         hasFaceSignature = faceSignature != nil
         applyOwner()
         startTimer()
@@ -290,6 +295,24 @@ final class Coordinator {
         }
     }
 
+    /// Mouse movement over a black monitor: read idle time now rather than at the next tick, so the
+    /// screens come back within a second. The engine still decides.
+    private func inputSeen() {
+        send(.idle(seconds: seams.idle.secondsSinceInput()))
+    }
+
+    /// Switching Monitors Off off while Away must not leave the externals black or the
+    /// display-sleep assertion held.
+    private func applyKeepBuiltInOn() {
+        seams.display.keepBuiltInOn = settings.keepBuiltInOn
+        if !settings.keepBuiltInOn { leaveMonitorsOff() }
+    }
+
+    private func leaveMonitorsOff() {
+        monitorsOff.hide()
+        keepAwake.holdDisplays(false)
+    }
+
     private func startTimer() {
         // One coalesced timer: while input is recent this read is the only work the app does.
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
@@ -333,8 +356,15 @@ final class Coordinator {
 
     private func perform(_ effect: Effect) {
         switch effect {
-        case .screensOff: seams.display.screensOff()
-        case .screensOn: seams.display.screensOn()
+        case .screensOff:
+            seams.display.screensOff()
+            if settings.keepBuiltInOn {
+                monitorsOff.show()
+                keepAwake.holdDisplays(true)
+            }
+        case .screensOn:
+            leaveMonitorsOff()
+            seams.display.screensOn()
         case .lock: seams.display.lock()
         case .sample(let mode):
             engineMode = mode

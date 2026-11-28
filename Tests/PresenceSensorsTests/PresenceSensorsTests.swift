@@ -28,17 +28,78 @@ import Testing
 }
 
 @Suite struct DisplayControlTests {
-    @Test func eachCallRunsOnlyItsOwnAction() {
-        let calls = Mutex<[String]>([])
-        let control = DisplayControl(actions: .init(
-            sleepDisplays: { calls.withLock { $0.append("off") } },
-            declareUserActivity: { calls.withLock { $0.append("on") } },
-            lockSession: { calls.withLock { $0.append("lock") } }
-        ))
+    /// Records which hardware action ran, so no test touches a real display.
+    final class Calls: Sendable {
+        private let list = Mutex<[String]>([])
+        func withLock<R>(_ body: (inout [String]) -> R) -> R { list.withLock { body(&$0) } }
+    }
+
+    private static func recording(_ calls: Calls) -> DisplayControl.Actions {
+        .init(
+            sleepDisplays: { calls.withLock { $0.append("sleep") } },
+            declareUserActivity: { calls.withLock { $0.append("wake") } },
+            lockSession: { calls.withLock { $0.append("lock") } },
+            darkenExternals: { calls.withLock { $0.append("darken") } },
+            restoreGamma: { calls.withLock { $0.append("restore") } }
+        )
+    }
+
+    @Test func keepsBuiltInOnByDefault() {
+        let calls = Calls()
+        let control = DisplayControl(actions: Self.recording(calls))
+        #expect(control.keepBuiltInOn)
+        control.screensOff()
+        #expect(control.externalsDark)
+        control.screensOn()
+        #expect(!control.externalsDark)
+        #expect(calls.withLock { $0 } == ["darken", "restore", "wake"])
+    }
+
+    @Test func withoutKeepBuiltInOnSleepsEveryDisplay() {
+        let calls = Calls()
+        let control = DisplayControl(actions: Self.recording(calls))
+        control.keepBuiltInOn = false
         control.screensOff()
         control.screensOn()
         control.lock()
-        #expect(calls.withLock { $0 } == ["off", "on", "lock"])
+        #expect(!control.externalsDark)
+        #expect(calls.withLock { $0 } == ["sleep", "wake", "lock"])
+    }
+
+    @Test func turningTheModeOffWhileDarkRestores() {
+        let calls = Calls()
+        let control = DisplayControl(actions: Self.recording(calls))
+        control.screensOff()
+        control.keepBuiltInOn = false
+        #expect(!control.externalsDark)
+        #expect(calls.withLock { $0 } == ["darken", "restore"])
+    }
+
+    @Test func restoreOnlyActsWhenDark() {
+        let calls = Calls()
+        let control = DisplayControl(actions: Self.recording(calls))
+        control.restore()
+        control.displaysChanged()
+        #expect(calls.withLock { $0 }.isEmpty)
+        control.screensOff()
+        control.displaysChanged()
+        control.restore()
+        control.restore()
+        #expect(calls.withLock { $0 } == ["darken", "darken", "restore"])
+    }
+
+    @Test func darkensOnlyExternalsNotMirroringTheBuiltIn() {
+        typealias Info = DisplayControl.DisplayInfo
+        #expect(DisplayControl.externals([Info(id: 1, isBuiltIn: true), Info(id: 2, isBuiltIn: false),
+                                          Info(id: 3, isBuiltIn: false)]) == [2, 3])
+        // Clamshell: no built-in, so every display goes dark.
+        #expect(DisplayControl.externals([Info(id: 2, isBuiltIn: false)]) == [2])
+        // An external mirroring the built-in shows the Away screen too.
+        #expect(DisplayControl.externals([Info(id: 1, isBuiltIn: true), Info(id: 2, isBuiltIn: false, mirrors: 1)]) == [])
+        #expect(DisplayControl.externals([Info(id: 1, isBuiltIn: true, mirrors: 2), Info(id: 2, isBuiltIn: false)]) == [])
+        // Two externals mirroring each other are both external.
+        #expect(DisplayControl.externals([Info(id: 1, isBuiltIn: true), Info(id: 2, isBuiltIn: false),
+                                          Info(id: 3, isBuiltIn: false, mirrors: 2)]) == [2, 3])
     }
 
     @Test func publicInitIsUsableThroughTheSeam() {

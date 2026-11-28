@@ -5,7 +5,8 @@ import PresenceSensors
 struct Seams {
     /// Concrete because calibration is a camera feature, not part of `PresenceSource`.
     var camera: CameraSource
-    var display: any DisplayControlling
+    /// Concrete because Monitors Off (`keepBuiltInOn`, restore) is not part of `DisplayControlling`.
+    var display: DisplayControl
     var idle: any IdleReading
     var voice: any VoiceListening
     var mic: any MicUsageReading
