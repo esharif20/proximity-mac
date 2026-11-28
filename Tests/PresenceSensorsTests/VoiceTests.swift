@@ -87,6 +87,25 @@ import Testing
     }
 }
 
+@Suite struct VoiceLevelTests {
+    @Test(arguments: [(Float(0), Float(0)), (0.5, 0.5), (-0.5, 0.5), (3, 1)])
+    func levelIsTheClampedRMS(sample: Float, expected: Float) {
+        let samples = [Float](repeating: sample, count: 4096)
+        let level = samples.withUnsafeBufferPointer { VoiceSource.level($0) }
+        #expect(abs(level - expected) < 0.0001)
+    }
+
+    @Test func emptyBufferIsSilent() {
+        #expect([Float]().withUnsafeBufferPointer { VoiceSource.level($0) } == 0)
+    }
+
+    @Test func alternatingSignsAreNotCancelled() {
+        let samples = (0..<1000).map { $0.isMultiple(of: 2) ? Float(0.3) : -0.3 }
+        let level = samples.withUnsafeBufferPointer { VoiceSource.level($0) }
+        #expect(abs(level - 0.3) < 0.0001)
+    }
+}
+
 @Suite struct VoiceMicUsageTests {
     @Test func ourOwnCaptureDoesNotCount() {
         let mine = MicUsage.ProcessInput(pid: 42, runningInput: true)
@@ -138,6 +157,7 @@ final class VoiceProbe: Sendable {
         var isCurrent: (@Sendable () -> Bool)?
         var interrupt: (@Sendable () -> Void)?
         var text: (@Sendable (String) -> Void)?
+        var level: (@Sendable () -> (@Sendable (Float) -> Void)?)?
     }
     let counts = Mutex(Counts())
     let allowed: Bool
@@ -155,8 +175,9 @@ final class VoiceProbe: Sendable {
                 counts.withLock { $0.access += 1 }
                 return allowed
             },
-            open: { [self] isCurrent, onText, onInterrupted in
+            open: { [self] isCurrent, onText, onInterrupted, levelHandler in
                 counts.withLock {
+                    $0.level = levelHandler
                     $0.opens += 1
                     $0.isCurrent = isCurrent
                     $0.interrupt = onInterrupted
@@ -173,6 +194,7 @@ final class VoiceProbe: Sendable {
     var isCurrent: (@Sendable () -> Bool)? { counts.withLock { $0.isCurrent } }
     var interrupt: (@Sendable () -> Void)? { counts.withLock { $0.interrupt } }
     var text: (@Sendable (String) -> Void)? { counts.withLock { $0.text } }
+    var level: (@Sendable () -> (@Sendable (Float) -> Void)?)? { counts.withLock { $0.level } }
 }
 
 func eventually(_ condition: () -> Bool) async -> Bool {
@@ -244,6 +266,22 @@ func eventually(_ condition: () -> Bool) async -> Bool {
         deliver("screen wake up")
         #expect(heard.withLock { $0 } == ["screen wake up"])
         source.stop()
+    }
+
+    @Test func levelsReachTheHandlerOnlyWhileStarted() async throws {
+        let probe = VoiceProbe()
+        let source = VoiceSource(opener: probe.opener)
+        let levels = Mutex<[Float]>([])
+        source.start()
+        #expect(await eventually { probe.level != nil })
+        let level = try #require(probe.level)
+        #expect(level() == nil, "no handler means the session skips the level work")
+        source.onLevel { value in levels.withLock { $0.append(value) } }
+        let onLevel = try #require(level())
+        onLevel(0.25)
+        #expect(levels.withLock { $0 } == [0.25])
+        source.stop()
+        #expect(level() == nil, "a stopped source must not report levels")
     }
 
     @Test func releasingARunningSourceClosesTheMic() async throws {
