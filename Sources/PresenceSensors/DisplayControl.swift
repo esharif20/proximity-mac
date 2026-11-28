@@ -82,15 +82,37 @@ public final class DisplayControl: DisplayControlling {
         if externalsDark { actions.darkenExternals() }
     }
 
-    /// The displays to darken: everything but the built-in panel, and no display mirrored with it,
-    /// since a mirror shares the built-in's picture and darkening it would hide the Away screen.
+    /// The displays to darken: every display outside the built-in's mirror set, since a mirror
+    /// shares the built-in's picture and darkening it would hide the Away screen.
     static func externals(_ displays: [DisplayInfo]) -> [CGDirectDisplayID] {
-        let builtIns = displays.filter(\.isBuiltIn)
-        let builtIn = Set(builtIns.map(\.id))
-        let mirroredByBuiltIn = Set(builtIns.map(\.mirrors))
-        return displays
-            .filter { !$0.isBuiltIn && !builtIn.contains($0.mirrors) && !mirroredByBuiltIn.contains($0.id) }
-            .map(\.id)
+        displays.filter { !showsBuiltIn($0.id, in: displays) }.map(\.id)
+    }
+
+    /// Whether the display shows the built-in panel's picture: it is the built-in, or it is in a
+    /// mirror set with it. In mirror mode `NSScreen` reports only the set's primary, which may be
+    /// the external, so the app asks this rather than `CGDisplayIsBuiltin`.
+    static func showsBuiltIn(_ id: CGDirectDisplayID, in displays: [DisplayInfo]) -> Bool {
+        // Displays in one mirror set all mirror the same primary; the primary mirrors nothing.
+        func set(_ display: DisplayInfo) -> CGDirectDisplayID {
+            display.mirrors == kCGNullDirectDisplay ? display.id : display.mirrors
+        }
+        guard let display = displays.first(where: { $0.id == id }) else { return false }
+        return displays.contains { $0.isBuiltIn && set($0) == set(display) }
+    }
+
+    /// `showsBuiltIn` against the displays online now.
+    public static func showsBuiltIn(_ id: CGDirectDisplayID) -> Bool {
+        showsBuiltIn(id, in: onlineDisplays())
+    }
+
+    static func onlineDisplays() -> [DisplayInfo] {
+        var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetOnlineDisplayList(count, &ids, &count) == .success else { return [] }
+        return ids.prefix(Int(count)).map { id in
+            DisplayInfo(id: id, isBuiltIn: CGDisplayIsBuiltin(id) != 0, mirrors: CGDisplayMirrorsDisplay(id))
+        }
     }
 
     struct DisplayInfo: Equatable {
@@ -122,7 +144,7 @@ extension DisplayControl.Actions {
             _ = lockScreenFunction?()
         },
         darkenExternals: {
-            for id in DisplayControl.externals(onlineDisplays()) {
+            for id in DisplayControl.externals(DisplayControl.onlineDisplays()) {
                 // A transfer formula with max 0 maps every level to black. OLED pixels at 0 are unlit.
                 CGSetDisplayTransferByFormula(id, 0, 0, 1, 0, 0, 1, 0, 0, 1)
             }
@@ -131,17 +153,6 @@ extension DisplayControl.Actions {
             CGDisplayRestoreColorSyncSettings()
         }
     )
-
-    private static func onlineDisplays() -> [DisplayControl.DisplayInfo] {
-        var count: UInt32 = 0
-        guard CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
-        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
-        guard CGGetOnlineDisplayList(count, &ids, &count) == .success else { return [] }
-        return ids.prefix(Int(count)).map { id in
-            DisplayControl.DisplayInfo(
-                id: id, isBuiltIn: CGDisplayIsBuiltin(id) != 0, mirrors: CGDisplayMirrorsDisplay(id))
-        }
-    }
 
     /// `SACLockScreenImmediate` from login.framework is what the menu bar "Lock Screen" item calls.
     /// It is private, so it is looked up at runtime and lock does nothing if it is missing.

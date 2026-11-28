@@ -102,6 +102,29 @@ import Testing
                                           Info(id: 3, isBuiltIn: false, mirrors: 2)]) == [2, 3])
     }
 
+    @Test func aScreenShowsTheBuiltInWhenAnyDisplayInItsMirrorSetIsBuiltIn() {
+        typealias Info = DisplayControl.DisplayInfo
+        let separate = [Info(id: 1, isBuiltIn: true), Info(id: 2, isBuiltIn: false)]
+        #expect(DisplayControl.showsBuiltIn(1, in: separate))
+        #expect(!DisplayControl.showsBuiltIn(2, in: separate))
+        // Mirror with the external as primary: NSScreen reports display 2 for the one screen.
+        let externalPrimary = [Info(id: 1, isBuiltIn: true, mirrors: 2), Info(id: 2, isBuiltIn: false)]
+        #expect(DisplayControl.showsBuiltIn(2, in: externalPrimary))
+        #expect(DisplayControl.showsBuiltIn(1, in: externalPrimary))
+        let builtInPrimary = [Info(id: 1, isBuiltIn: true), Info(id: 2, isBuiltIn: false, mirrors: 1)]
+        #expect(DisplayControl.showsBuiltIn(1, in: builtInPrimary))
+        #expect(DisplayControl.showsBuiltIn(2, in: builtInPrimary))
+        // A third display mirroring into the same set as the built-in.
+        let three = [Info(id: 1, isBuiltIn: true, mirrors: 2), Info(id: 2, isBuiltIn: false),
+                     Info(id: 3, isBuiltIn: false, mirrors: 2), Info(id: 4, isBuiltIn: false)]
+        #expect(DisplayControl.showsBuiltIn(3, in: three))
+        #expect(!DisplayControl.showsBuiltIn(4, in: three))
+        #expect(DisplayControl.externals(three) == [4])
+        // Unknown display or clamshell.
+        #expect(!DisplayControl.showsBuiltIn(9, in: separate))
+        #expect(!DisplayControl.showsBuiltIn(2, in: [Info(id: 2, isBuiltIn: false)]))
+    }
+
     @Test func publicInitIsUsableThroughTheSeam() {
         let control: any DisplayControlling = DisplayControl()
         _ = control
