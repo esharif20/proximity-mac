@@ -131,8 +131,9 @@ extension NSScreen {
         deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
     }
 
+    /// The built-in panel's picture is on this screen, mirrored or not, so it gets the Away screen.
     var isBuiltIn: Bool {
         guard let displayID else { return false }
-        return CGDisplayIsBuiltin(displayID) != 0
+        return DisplayControl.showsBuiltIn(displayID)
     }
 }
