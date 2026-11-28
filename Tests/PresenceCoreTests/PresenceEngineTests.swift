@@ -526,3 +526,139 @@ private struct Driver {
         #expect(reached > 20, "the random runs must actually reach the cutoff: \(reached)")
     }
 }
+
+private func closeFace(owner: Bool?) -> Event {
+    .observation(Observation(source: .camera, person: true, distanceCm: 60, owner: owner))
+}
+
+@Suite struct PresenceEngineOwnerTests {
+    private func onlyMe() -> Settings {
+        var s = Settings()
+        s.onlyWakeForMe = true
+        return s
+    }
+
+    private func voiceNeedsMe() -> Settings {
+        var s = Settings()
+        s.voiceNeedsMe = true
+        return s
+    }
+
+    @Test(arguments: [false, nil] as [Bool?])
+    func onlyWakeForMeKeepsAwayForSomeoneElse(owner: Bool?) {
+        var d = Driver(onlyMe())
+        d.toAway()
+        #expect(d.at(80, closeFace(owner: owner)) == [])
+        #expect(d.state == .away)
+    }
+
+    @Test func onlyWakeForMeWakesForTheOwner() {
+        var d = Driver(onlyMe())
+        d.toAway()
+        #expect(d.at(80, closeFace(owner: true)).contains(.screensOn))
+        #expect(d.state == .present)
+    }
+
+    @Test func onlyWakeForMeStillWakesOnInput() {
+        var d = Driver(onlyMe())
+        d.toAway()
+        #expect(d.at(80, .idle(seconds: 0)).contains(.screensOn))
+        #expect(d.state == .present)
+    }
+
+    @Test func anyCloseFaceStillCountsBeforeAway() {
+        // A mismatch must never lead to Screens Off, so checking and grace treat everyone alike.
+        var d = Driver(onlyMe())
+        d.toChecking()
+        d.at(31, closeFace(owner: false))
+        #expect(d.state == .present)
+
+        var g = Driver(onlyMe())
+        g.toGrace()
+        #expect(g.at(62, closeFace(owner: false)).contains(.hideGrace))
+        #expect(g.state == .present)
+
+        var h = Driver(onlyMe())
+        h.at(5, .command(.wake))
+        #expect(h.state == .hold(until: nil))
+        h.at(10, closeFace(owner: false))
+        #expect(h.state == .present)
+    }
+
+    @Test func voiceNeedsMeIgnoresCommandsWhenTheOwnerWasNeverSeen() {
+        var d = Driver(voiceNeedsMe())
+        #expect(d.at(5, .command(.sleep)) == [])
+        #expect(d.state == .present)
+        #expect(d.engine.lastIgnoredCommand == .sleep)
+    }
+
+    @Test func voiceNeedsMeAcceptsCommandsSoonAfterTheOwnerWasSeen() {
+        var d = Driver(voiceNeedsMe())
+        d.at(5, .command(.sleep))
+        d.at(10, closeFace(owner: true))
+        #expect(d.at(10 + 29 * 60, .command(.sleep)).contains(.screensOff))
+        #expect(d.state == .away)
+        #expect(d.engine.lastIgnoredCommand == nil)
+    }
+
+    @Test func voiceNeedsMeIgnoresCommandsLongAfterTheOwnerWasSeen() {
+        var d = Driver(voiceNeedsMe())
+        d.at(10, closeFace(owner: true))
+        #expect(d.at(10 + 31 * 60, .command(.hold(minutes: 5))) == [])
+        #expect(d.engine.lastIgnoredCommand == .hold(minutes: 5))
+    }
+
+    @Test func ownerSeenWhileAwayCountsForVoice() {
+        var s = voiceNeedsMe()
+        s.onlyWakeForMe = true
+        var d = Driver(s)
+        d.toAway()
+        d.at(80, closeFace(owner: true))
+        d.at(85, .idle(seconds: 90))
+        #expect(d.at(90, .command(.sleep)).contains(.screensOff))
+    }
+
+    @Test func commandsWorkWithoutVoiceNeedsMe() {
+        var d = Driver()
+        #expect(d.at(5, .command(.sleep)).contains(.screensOff))
+        #expect(d.engine.lastIgnoredCommand == nil)
+    }
+
+    @Test func noObservationOfSomeoneElseEverWakesFromAway() {
+        var checked = 0
+        for seed in UInt64(5000)..<5300 {
+            var g = Gen(seed: seed)
+            var s = Settings()
+            s.onlyWakeForMe = true
+            s.voiceNeedsMe = .random(using: &g)
+            s.graceSeconds = .random(in: 0...15, using: &g)
+            s.absenceBeforeAway = .random(in: 1...60, using: &g)
+            var engine = PresenceEngine(settings: s)
+            _ = engine.handle(.enable, at: 0)
+            var t = 0.0, idle = 0.0
+            for _ in 0..<400 {
+                let dt = Double.random(in: 0.1...5, using: &g)
+                t += dt
+                let event: Event
+                switch Int.random(in: 0..<10, using: &g) {
+                case 0..<4: idle += dt; event = .idle(seconds: idle)
+                case 4..<8:
+                    event = .observation(Observation(
+                        source: .camera, person: .random(using: &g),
+                        distanceCm: .random(in: 20...400, using: &g),
+                        owner: Bool.random(using: &g) ? false : nil))
+                case 8: event = .command(.sleep)
+                default: event = .tick
+                }
+                let wasAway = engine.state == .away
+                let effects = engine.handle(event, at: t)
+                if wasAway, case .observation = event {
+                    checked += 1
+                    #expect(!effects.contains(.screensOn), "seed \(seed) t \(t) \(event)")
+                    #expect(engine.state == .away, "seed \(seed) t \(t) \(event)")
+                }
+            }
+        }
+        #expect(checked > 1000, "the random runs must actually see faces while Away: \(checked)")
+    }
+}
