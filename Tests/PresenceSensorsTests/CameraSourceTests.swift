@@ -217,6 +217,18 @@ import Testing
         #expect(schedule.shouldRun(at: 0.6, moved: false) == nil, "the pending motion was used up")
     }
 
+    @Test func checkingMotionAddsNoPassesButMarksTheNextOne() {
+        var schedule = VisionSchedule(mode: .checking)
+        let frames = (0..<30).map { Double($0) / 15 }
+        let taken = frames.compactMap { schedule.shouldRun(at: $0, moved: true) }
+        // Frames at 0, 0.93 and 1.87 s: the throttle's early tolerance lets a frame 0.9 s on through.
+        #expect(taken.count == 3, "one pass a second, however much moves")
+        #expect(taken.allSatisfy { $0 == .motion })
+        #expect(schedule.shouldRun(at: 2.0, moved: true) == nil, "motion between passes adds none")
+        #expect(schedule.shouldRun(at: 2.9, moved: false) == .motion, "but the next pass runs the full chain")
+        #expect(schedule.shouldRun(at: 3.9, moved: false) == .still)
+    }
+
     @Test func offRunsNothingEvenOnMotion() {
         var schedule = VisionSchedule(mode: .off)
         let taken = (0..<30).filter { schedule.shouldRun(at: Double($0) / 15, moved: true) != nil }

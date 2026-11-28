@@ -433,15 +433,25 @@ struct VisionSchedule {
     /// Motion the cap or an owner check held back. The gate has already moved past those frames, so
     /// dropping it would lose a short wave; it runs on the first frame the cap allows instead.
     private var pendingMotion = false
+    /// Only Watching adds passes for motion, to catch a wave quickly. Checking already runs every second, and
+    /// extra passes there cost more than the 5% budget; its motion only upgrades the next pass to `.motion`.
+    private let motionAddsPasses: Bool
 
     init(mode: SamplingMode) {
         slow = FrameThrottle(interval: FrameThrottle.interval(for: mode))
         fast = FrameThrottle(interval: mode == .off ? nil : Self.motionInterval)
+        motionAddsPasses = mode == .watching
     }
 
     /// nil when this frame is skipped.
     mutating func shouldRun(at now: Double, moved: Bool) -> Pass? {
         guard slow.interval != nil else { return nil }
+        if !motionAddsPasses {
+            if moved { pendingMotion = true }
+            guard slow.shouldSample(at: now) else { return nil }
+            defer { pendingMotion = false }
+            return pendingMotion ? .motion : .still
+        }
         if moved || pendingMotion {
             guard fast.shouldSample(at: now) else {
                 pendingMotion = true

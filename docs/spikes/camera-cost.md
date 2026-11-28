@@ -124,3 +124,14 @@ that is why they stayed on motion passes.
 Checking is over its 5% budget with or without segmentation, and the result depends on how much the scene moves.
 Segmentation adds about 5 MB. The breach comes from motion passes at up to 4 a second while Checking, each costing at
 least the face pass, not from this change.
+
+After that, Checking stopped adding passes for motion: it runs once a second, and motion seen since the last pass only
+makes that pass a `.motion` one (body and hand pose too). Watching keeps its motion passes for a quick wake.
+
+| Build | checking camera-on |
+| ----- | ------------------ |
+| Checking passes once a second only | 10.56% CPU, 151.5 MB, FAIL |
+| `main` at 30752b6, without this lane | 11.57% CPU, 135.5 MB, FAIL |
+
+The baseline (bench/baseline.json) is 4.81%. `main` alone is now over twice that in the same room, so the rise came
+from something outside this lane and needs its own look.
