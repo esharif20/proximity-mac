@@ -811,6 +811,17 @@ private let motion = Event.observation(Observation(source: .camera, person: fals
         #expect(d.engine.reason == .stoppedWatching)
     }
 
+    @Test func watchingAgainAfterAnIgnoredCommandRestoresTheAwayReason() {
+        var s = Settings()
+        s.voiceNeedsMe = true
+        var d = Driver(s)
+        d.toAway()
+        d.at(70 + 15 * 60, .tick)
+        #expect(d.engine.reason == .stoppedWatching)
+        #expect(d.at(71 + 15 * 60, .command(.wake)) == [.sample(.watching)])
+        #expect(d.engine.reason == .nobodySeen)
+    }
+
     @Test func aTimedHoldEndingWhileIdleChecks() {
         var d = Driver()
         d.at(10, .idle(seconds: 40))
@@ -908,5 +919,151 @@ private let motion = Event.observation(Observation(source: .camera, person: fals
         d.at(1, .mediaPlaying(true))
         #expect(d.at(2, .command(.sleep)).contains(.screensOff))
         #expect(d.state == .away)
+    }
+}
+
+private func phone(_ rssi: Double) -> Event { .observation(Observation(source: .ble, person: false, rssi: rssi)) }
+
+private func linked(onlyWakeForMe: Bool = false) -> Settings {
+    var s = Settings()
+    s.phone = PhoneLink(identifier: "test", name: "Phone", nearRssi: -60, farRssi: -80)
+    s.onlyWakeForMe = onlyWakeForMe
+    return s
+}
+
+@Suite struct PresenceEnginePhoneTests {
+    @Test func aPhoneNeverCountsAsAClosePerson() {
+        var d = Driver(linked())
+        d.toChecking()
+        // Even a source that wrongly says person and close.
+        d.at(40, .observation(Observation(source: .ble, person: true, distanceCm: 30, rssi: -40)))
+        #expect(d.state == .checking)
+    }
+
+    @Test func aNearPhoneNeverWakesFromAway() {
+        var d = Driver(linked())
+        d.toAway()
+        #expect(d.at(71, phone(-40)) == [])
+        #expect(d.state == .away)
+    }
+
+    @Test func aPhoneReadingDoesNotUndoSleepAtTheDesk() {
+        var d = Driver(linked())
+        d.at(1, .command(.sleep))
+        d.at(2, phone(-90))
+        #expect(d.at(3, close) == [])
+        #expect(d.state == .away)
+    }
+
+    @Test func onlyWakeForMeWakesForAStrangerFaceWhenThePhoneIsNear() {
+        var d = Driver(linked(onlyWakeForMe: true))
+        d.toAway()
+        d.at(71, phone(-50))
+        #expect(d.at(72, .observation(Observation(source: .camera, person: true, distanceCm: 60, owner: false))).contains(.screensOn))
+        #expect(d.engine.reason == .phoneNear)
+    }
+
+    @Test func onlyWakeForMeStaysDarkWhenThePhoneIsFarOrStale() {
+        let stranger = Event.observation(Observation(source: .camera, person: true, distanceCm: 60, owner: false))
+        var d = Driver(linked(onlyWakeForMe: true))
+        d.toAway()
+        d.at(71, phone(-90))
+        #expect(d.at(72, stranger) == [])
+        d.at(73, phone(-50))
+        #expect(d.at(104, stranger) == [], "a near reading 31 s old says nothing")
+        #expect(d.state == .away)
+    }
+
+    @Test func betweenTheLevelsThePhoneKeepsItsLastState() {
+        let stranger = Event.observation(Observation(source: .camera, person: true, distanceCm: 60, owner: false))
+        var d = Driver(linked(onlyWakeForMe: true))
+        d.toAway()
+        d.at(71, phone(-50))
+        d.at(72, phone(-70))
+        #expect(d.at(73, stranger).contains(.screensOn))
+
+        var e = Driver(linked(onlyWakeForMe: true))
+        e.toAway()
+        e.at(71, phone(-90))
+        e.at(72, phone(-70))
+        #expect(e.at(73, stranger) == [])
+    }
+
+    @Test func aPhoneFarForTenSecondsShortensTheCheck() {
+        var d = Driver(linked())
+        d.toChecking()
+        d.at(31, phone(-90))
+        d.at(35, phone(-85))
+        #expect(d.at(40, .tick) == [], "far for only 9 s")
+        #expect(d.at(41, phone(-88)) == [.showGrace(seconds: 10)])
+        #expect(d.engine.reason == .phoneLeft)
+    }
+
+    @Test func theShortCheckStillNeedsTenSecondsOfAbsence() {
+        var d = Driver(linked())
+        d.at(1, phone(-90))
+        d.at(10, .idle(seconds: 10))
+        d.at(25, phone(-90))
+        d.at(30, .idle(seconds: 30))
+        #expect(d.at(39, .tick) == [])
+        #expect(d.at(40, .tick) == [.showGrace(seconds: 10)])
+    }
+
+    @Test func aBriefDipDoesNotShortenTheCheck() {
+        var d = Driver(linked())
+        d.toChecking()
+        d.at(31, phone(-90))
+        d.at(36, phone(-55))
+        d.at(38, phone(-90))
+        #expect(d.at(45, .tick) == [])
+        #expect(d.at(48, phone(-90)) == [.showGrace(seconds: 10)])
+    }
+
+    @Test func aStaleFarPhoneDoesNotShortenTheCheck() {
+        var d = Driver(linked())
+        d.at(5, phone(-90))
+        d.at(10, .idle(seconds: 10))
+        d.at(30, .idle(seconds: 30))
+        #expect(d.at(45, .tick) == [])
+        #expect(d.engine.reason == .checking)
+        #expect(d.at(60, .tick) == [.showGrace(seconds: 10)])
+        #expect(d.engine.reason == .nobodySeen)
+    }
+
+    @Test func noLinkedPhoneIgnoresBleEntirely() {
+        var d = Driver()
+        d.toChecking()
+        for t in stride(from: 31.0, through: 59, by: 1) { #expect(d.at(t, phone(-95)) == []) }
+        #expect(d.at(60, .tick) == [.showGrace(seconds: 10)])
+        #expect(d.engine.reason == .nobodySeen)
+    }
+
+    @Test func unlinkingThePhoneForgetsIt() {
+        var d = Driver(linked())
+        d.toChecking()
+        d.at(31, phone(-90))
+        d.engine.update(settings: Settings())
+        #expect(d.at(45, .tick) == [])
+    }
+
+    @Test func noSequenceOfPhoneReadingsAloneTurnsTheScreensOn() {
+        var checked = 0
+        for seed in UInt64(0)..<200 {
+            var g = Gen(seed: seed)
+            var engine = PresenceEngine(settings: linked(onlyWakeForMe: .random(using: &g)))
+            _ = engine.handle(.enable, at: 0)
+            _ = engine.handle(.command(.sleep), at: 0)
+            var t = 0.0
+            for _ in 0..<300 {
+                t += .random(in: 0.1...40, using: &g)
+                let event: Event = Int.random(in: 0..<5, using: &g) == 0 ? .tick : .observation(Observation(
+                    source: .ble, person: .random(using: &g), distanceCm: Bool.random(using: &g) ? 40 : nil,
+                    owner: Bool.random(using: &g) ? true : nil, rssi: .random(in: -100 ... -30, using: &g),
+                    motion: Bool.random(using: &g) ? true : nil))
+                checked += 1
+                #expect(!engine.handle(event, at: t).contains(.screensOn), "seed \(seed) t \(t) \(event)")
+            }
+        }
+        #expect(checked == 60_000)
     }
 }
