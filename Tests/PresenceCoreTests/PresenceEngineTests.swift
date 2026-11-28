@@ -691,3 +691,379 @@ private func closeFace(owner: Bool?) -> Event {
         #expect(checked > 1000, "the random runs must actually see faces while Away: \(checked)")
     }
 }
+
+private let motion = Event.observation(Observation(source: .camera, person: false, motion: true))
+
+@Suite struct PresenceEngineMotionTests {
+    @Test func motionDuringGraceChecksAgainWithAFreshTimer() {
+        var d = Driver()
+        d.toGrace()
+        #expect(d.at(62, motion) == [.hideGrace])
+        #expect(d.state == .checking)
+        #expect(d.engine.reason == .checking)
+        #expect(d.at(91, nobody) == [])
+        #expect(d.at(92, .tick) == [.showGrace(seconds: 10)])
+    }
+
+    @Test func motionWhileCheckingDoesNotRestartTheTimer() {
+        var d = Driver()
+        d.toChecking()
+        d.at(50, motion)
+        #expect(d.at(60, .tick) == [.showGrace(seconds: 10)])
+    }
+
+    @Test func theFourthGraceRunsOutDespiteMotion() {
+        var d = Driver()
+        d.toChecking()
+        var off: Double?
+        for t in stride(from: 32.0, through: 400, by: 2) where off == nil {
+            if d.at(t, motion).contains(.screensOff) { off = t }
+        }
+        // Graces at 60, 92, 124 are undone at 62, 94, 126; the one at 156 runs out at 166.
+        #expect(off == 166)
+        #expect(d.state == .away)
+    }
+
+    @Test func aCloseSightingResetsTheMotionCount() {
+        var d = Driver()
+        d.toChecking()
+        var t = 32.0
+        func run(until end: Double) -> Bool {
+            var wentOff = false
+            while t <= end {
+                if d.at(t, motion).contains(.screensOff) { wentOff = true }
+                t += 2
+            }
+            return wentOff
+        }
+        #expect(!run(until: 150))
+        d.at(151, close)
+        #expect(d.state == .present)
+        // Rests 60 s, checks 30 s, then three more graces can be undone.
+        d.at(211, .idle(seconds: 211))
+        #expect(d.state == .checking)
+        t = 212
+        #expect(!run(until: 330))
+    }
+
+    @Test func inputResetsTheMotionCount() {
+        var d = Driver()
+        d.toChecking()
+        for t in stride(from: 32.0, through: 150, by: 2) { d.at(t, motion) }
+        d.at(151, .idle(seconds: 0))
+        #expect(d.state == .present)
+        d.at(181, .idle(seconds: 30))
+        #expect(d.state == .checking)
+        var wentOff = false
+        for t in stride(from: 182.0, through: 300, by: 2) where d.at(t, motion).contains(.screensOff) { wentOff = true }
+        #expect(!wentOff)
+    }
+
+    @Test func motionWhileAwayDoesNotWake() {
+        var d = Driver()
+        d.toAway()
+        #expect(d.at(72, motion) == [])
+        #expect(d.state == .away)
+    }
+}
+
+@Suite struct PresenceEngineReasonTests {
+    @Test func reasonFollowsEachTransition() {
+        var d = Driver(enabled: false)
+        #expect(d.engine.reason == .turnedOff)
+        d.at(0, .enable)
+        #expect(d.engine.reason == .typing)
+        d.toChecking()
+        #expect(d.engine.reason == .checking)
+        d.at(60, nobody)
+        #expect(d.engine.reason == .nobodySeen)
+        d.at(70, .tick)
+        #expect(d.engine.reason == .nobodySeen)
+        d.at(71, close)
+        #expect(d.engine.reason == .seenClose)
+        d.at(72, .command(.sleep))
+        #expect(d.engine.reason == .sleepCommand)
+        d.at(73, .command(.wake))
+        #expect(d.engine.reason == .command)
+        d.at(74, .command(.hold(minutes: 5)))
+        #expect(d.engine.reason == .holdCommand)
+        d.at(75, .idle(seconds: 0))
+        #expect(d.engine.reason == .holdCommand)
+        d.at(76, .disable)
+        #expect(d.engine.reason == .turnedOff)
+    }
+
+    @Test func reasonNamesTheOwnerAndTyping() {
+        var d = Driver()
+        d.toAway()
+        d.at(71, .observation(Observation(source: .camera, person: true, distanceCm: 60, owner: true)))
+        #expect(d.engine.reason == .ownerSeen)
+        d.at(200, .idle(seconds: 100))
+        d.at(230, nobody)
+        d.at(231, .idle(seconds: 0))
+        #expect(d.engine.reason == .typing)
+    }
+
+    @Test func reasonSaysWhenWatchingStopped() {
+        var d = Driver()
+        d.toAway()
+        d.at(70 + 15 * 60, .tick)
+        #expect(d.engine.reason == .stoppedWatching)
+    }
+
+    @Test func watchingAgainAfterAnIgnoredCommandRestoresTheAwayReason() {
+        var s = Settings()
+        s.voiceNeedsMe = true
+        var d = Driver(s)
+        d.toAway()
+        d.at(70 + 15 * 60, .tick)
+        #expect(d.engine.reason == .stoppedWatching)
+        #expect(d.at(71 + 15 * 60, .command(.wake)) == [.sample(.watching)])
+        #expect(d.engine.reason == .nobodySeen)
+    }
+
+    @Test func aTimedHoldEndingWhileIdleChecks() {
+        var d = Driver()
+        d.at(10, .idle(seconds: 40))
+        d.at(11, .command(.hold(minutes: 1)))
+        d.at(71, .idle(seconds: 101))
+        #expect(d.state == .checking)
+        #expect(d.engine.reason == .checking)
+    }
+}
+
+@Suite struct PresenceEngineMediaTests {
+    @Test func mediaPlayingStopsAnIdleCheckFromStarting() {
+        var d = Driver()
+        d.at(5, .mediaPlaying(true))
+        #expect(d.at(30, .idle(seconds: 30)) == [.listen(true)])
+        #expect(d.state == .present)
+        #expect(d.engine.reason == .mediaPlaying)
+        for t in stride(from: 31.0, through: 600, by: 1) { #expect(!d.at(t, .idle(seconds: t)).contains(.screensOff)) }
+    }
+
+    @Test func mediaStartingDuringGraceKeepsTheScreensOn() {
+        var d = Driver()
+        d.toGrace()
+        #expect(d.at(65, .mediaPlaying(true)) == [.hideGrace, .sample(.off)])
+        #expect(d.state == .present)
+        #expect(d.engine.reason == .mediaPlaying)
+        #expect(d.at(80, .tick) == [])
+    }
+
+    @Test func mediaStartingWhileCheckingEndsTheCheck() {
+        var d = Driver()
+        d.toChecking()
+        #expect(d.at(40, .mediaPlaying(true)) == [.sample(.off)])
+        #expect(d.state == .present)
+    }
+
+    @Test func mediaNeverWakesFromAway() {
+        var d = Driver()
+        d.toAway()
+        #expect(d.at(80, .mediaPlaying(true)) == [])
+        #expect(d.state == .away)
+    }
+
+    @Test func mediaStoppingResumesTheNormalRules() {
+        var d = Driver()
+        d.at(5, .mediaPlaying(true))
+        d.at(100, .idle(seconds: 100))
+        d.at(200, .mediaPlaying(false))
+        #expect(d.at(201, .idle(seconds: 201)).contains(.sample(.checking)))
+        d.at(220, nobody)
+        #expect(d.at(231, .tick) == [.showGrace(seconds: 10)])
+        #expect(d.at(241, .tick).contains(.screensOff))
+    }
+
+    @Test func mediaIsIgnoredWhenTheSettingIsOff() {
+        var s = Settings()
+        s.respectMediaPlaying = false
+        var d = Driver(s)
+        d.at(5, .mediaPlaying(true))
+        d.toGrace()
+        #expect(d.at(70, .tick).contains(.screensOff))
+    }
+
+    @Test func turningTheSettingOnDuringGraceStopsIt() {
+        var s = Settings()
+        s.respectMediaPlaying = false
+        var d = Driver(s)
+        d.at(5, .mediaPlaying(true))
+        d.toGrace()
+        s.respectMediaPlaying = true
+        d.engine.update(settings: s)
+        #expect(d.at(65, .tick) == [.hideGrace, .sample(.off)])
+    }
+
+    @Test func aTimedHoldEndingDuringMediaStaysPresent() {
+        var d = Driver()
+        d.at(1, .mediaPlaying(true))
+        d.at(10, .idle(seconds: 40))
+        d.at(11, .command(.hold(minutes: 1)))
+        #expect(!d.at(71, .idle(seconds: 101)).contains(.sample(.checking)))
+        #expect(d.state == .present)
+        #expect(d.engine.reason == .mediaPlaying)
+    }
+
+    @Test func mediaReportedWhileOffCountsOnceEnabled() {
+        var d = Driver(enabled: false)
+        d.at(0, .mediaPlaying(true))
+        d.at(1, .enable)
+        #expect(d.at(40, .idle(seconds: 40)) == [.listen(true)])
+        #expect(d.state == .present)
+    }
+
+    @Test func sleepCommandStillWorksDuringMedia() {
+        var d = Driver()
+        d.at(1, .mediaPlaying(true))
+        #expect(d.at(2, .command(.sleep)).contains(.screensOff))
+        #expect(d.state == .away)
+    }
+}
+
+private func phone(_ rssi: Double) -> Event { .observation(Observation(source: .ble, person: false, rssi: rssi)) }
+
+private func linked(onlyWakeForMe: Bool = false) -> Settings {
+    var s = Settings()
+    s.phone = PhoneLink(identifier: "test", name: "Phone", nearRssi: -60, farRssi: -80)
+    s.onlyWakeForMe = onlyWakeForMe
+    return s
+}
+
+@Suite struct PresenceEnginePhoneTests {
+    @Test func aPhoneNeverCountsAsAClosePerson() {
+        var d = Driver(linked())
+        d.toChecking()
+        // Even a source that wrongly says person and close.
+        d.at(40, .observation(Observation(source: .ble, person: true, distanceCm: 30, rssi: -40)))
+        #expect(d.state == .checking)
+    }
+
+    @Test func aNearPhoneNeverWakesFromAway() {
+        var d = Driver(linked())
+        d.toAway()
+        #expect(d.at(71, phone(-40)) == [])
+        #expect(d.state == .away)
+    }
+
+    @Test func aPhoneReadingDoesNotUndoSleepAtTheDesk() {
+        var d = Driver(linked())
+        d.at(1, .command(.sleep))
+        d.at(2, phone(-90))
+        #expect(d.at(3, close) == [])
+        #expect(d.state == .away)
+    }
+
+    @Test func onlyWakeForMeWakesForAStrangerFaceWhenThePhoneIsNear() {
+        var d = Driver(linked(onlyWakeForMe: true))
+        d.toAway()
+        d.at(71, phone(-50))
+        #expect(d.at(72, .observation(Observation(source: .camera, person: true, distanceCm: 60, owner: false))).contains(.screensOn))
+        #expect(d.engine.reason == .phoneNear)
+    }
+
+    @Test func onlyWakeForMeStaysDarkWhenThePhoneIsFarOrStale() {
+        let stranger = Event.observation(Observation(source: .camera, person: true, distanceCm: 60, owner: false))
+        var d = Driver(linked(onlyWakeForMe: true))
+        d.toAway()
+        d.at(71, phone(-90))
+        #expect(d.at(72, stranger) == [])
+        d.at(73, phone(-50))
+        #expect(d.at(104, stranger) == [], "a near reading 31 s old says nothing")
+        #expect(d.state == .away)
+    }
+
+    @Test func betweenTheLevelsThePhoneKeepsItsLastState() {
+        let stranger = Event.observation(Observation(source: .camera, person: true, distanceCm: 60, owner: false))
+        var d = Driver(linked(onlyWakeForMe: true))
+        d.toAway()
+        d.at(71, phone(-50))
+        d.at(72, phone(-70))
+        #expect(d.at(73, stranger).contains(.screensOn))
+
+        var e = Driver(linked(onlyWakeForMe: true))
+        e.toAway()
+        e.at(71, phone(-90))
+        e.at(72, phone(-70))
+        #expect(e.at(73, stranger) == [])
+    }
+
+    @Test func aPhoneFarForTenSecondsShortensTheCheck() {
+        var d = Driver(linked())
+        d.toChecking()
+        d.at(31, phone(-90))
+        d.at(35, phone(-85))
+        #expect(d.at(40, .tick) == [], "far for only 9 s")
+        #expect(d.at(41, phone(-88)) == [.showGrace(seconds: 10)])
+        #expect(d.engine.reason == .phoneLeft)
+    }
+
+    @Test func theShortCheckStillNeedsTenSecondsOfAbsence() {
+        var d = Driver(linked())
+        d.at(1, phone(-90))
+        d.at(10, .idle(seconds: 10))
+        d.at(25, phone(-90))
+        d.at(30, .idle(seconds: 30))
+        #expect(d.at(39, .tick) == [])
+        #expect(d.at(40, .tick) == [.showGrace(seconds: 10)])
+    }
+
+    @Test func aBriefDipDoesNotShortenTheCheck() {
+        var d = Driver(linked())
+        d.toChecking()
+        d.at(31, phone(-90))
+        d.at(36, phone(-55))
+        d.at(38, phone(-90))
+        #expect(d.at(45, .tick) == [])
+        #expect(d.at(48, phone(-90)) == [.showGrace(seconds: 10)])
+    }
+
+    @Test func aStaleFarPhoneDoesNotShortenTheCheck() {
+        var d = Driver(linked())
+        d.at(5, phone(-90))
+        d.at(10, .idle(seconds: 10))
+        d.at(30, .idle(seconds: 30))
+        #expect(d.at(45, .tick) == [])
+        #expect(d.engine.reason == .checking)
+        #expect(d.at(60, .tick) == [.showGrace(seconds: 10)])
+        #expect(d.engine.reason == .nobodySeen)
+    }
+
+    @Test func noLinkedPhoneIgnoresBleEntirely() {
+        var d = Driver()
+        d.toChecking()
+        for t in stride(from: 31.0, through: 59, by: 1) { #expect(d.at(t, phone(-95)) == []) }
+        #expect(d.at(60, .tick) == [.showGrace(seconds: 10)])
+        #expect(d.engine.reason == .nobodySeen)
+    }
+
+    @Test func unlinkingThePhoneForgetsIt() {
+        var d = Driver(linked())
+        d.toChecking()
+        d.at(31, phone(-90))
+        d.engine.update(settings: Settings())
+        #expect(d.at(45, .tick) == [])
+    }
+
+    @Test func noSequenceOfPhoneReadingsAloneTurnsTheScreensOn() {
+        var checked = 0
+        for seed in UInt64(0)..<200 {
+            var g = Gen(seed: seed)
+            var engine = PresenceEngine(settings: linked(onlyWakeForMe: .random(using: &g)))
+            _ = engine.handle(.enable, at: 0)
+            _ = engine.handle(.command(.sleep), at: 0)
+            var t = 0.0
+            for _ in 0..<300 {
+                t += .random(in: 0.1...40, using: &g)
+                let event: Event = Int.random(in: 0..<5, using: &g) == 0 ? .tick : .observation(Observation(
+                    source: .ble, person: .random(using: &g), distanceCm: Bool.random(using: &g) ? 40 : nil,
+                    owner: Bool.random(using: &g) ? true : nil, rssi: .random(in: -100 ... -30, using: &g),
+                    motion: Bool.random(using: &g) ? true : nil))
+                checked += 1
+                #expect(!engine.handle(event, at: t).contains(.screensOn), "seed \(seed) t \(t) \(event)")
+            }
+        }
+        #expect(checked == 60_000)
+    }
+}

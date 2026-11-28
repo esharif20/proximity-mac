@@ -3,6 +3,8 @@ import Foundation
 /// Decides every Screens Off. Pure: events and times in, effects out, so traces replay exactly.
 public struct PresenceEngine {
     public private(set) var state: PresenceState = .off
+    /// Why the engine is in `state`, for the one-line explanation in the menu.
+    public private(set) var reason: PresenceReason = .turnedOff
     private var settings: Settings
 
     // What the outside world is currently doing, so each effect is emitted only when it changes.
@@ -15,6 +17,7 @@ public struct PresenceEngine {
     /// When the last keyboard or mouse input happened, from the latest idle reading.
     private var lastInputAt: Double?
     private var micBusy = false
+    private var mediaPlaying = false
     /// When the current check started; a check that finds nobody close for `absenceBeforeAway` leads to grace.
     private var checkStarted: Double = 0
     /// After a close sighting the camera rests until this time.
@@ -23,8 +26,24 @@ public struct PresenceEngine {
     private var sleptAtDesk = false
     /// When the current Away began; watching stops `stopWatchingAfterMinutes` later (overnight, say).
     private var awayStarted: Double = 0
+    /// Why the current Away began, so watching again after `stoppedWatching` says so again.
+    private var awayReason: PresenceReason = .nobodySeen
     /// When the camera last recognised the Owner, in any state. Nil until it has.
     private var ownerSeenAt: Double?
+    /// Graces undone by camera motion since the person was last seen or typed. Capped so a fan or a
+    /// curtain cannot keep the monitors on forever.
+    private var motionReturns = 0
+    static let maxMotionReturns = 3
+
+    /// The linked phone or watch: near or far by its signal, with hysteresis between the two levels.
+    private var phoneNear: Bool?
+    private var phoneReadAt: Double?
+    /// When the phone last turned far, so a brief dip does not count as leaving.
+    private var phoneFarSince: Double?
+    /// A phone not heard from for this long may be off or out of range, so it says nothing.
+    static let phoneStaleAfter = 30.0
+    /// A phone far for this long while checking means the person has left with it.
+    static let phoneFarFor = 10.0
 
     /// The latest Command dropped because the Owner was not seen recently, so the app can say why.
     /// Cleared by the next accepted Command.
@@ -35,6 +54,7 @@ public struct PresenceEngine {
     }
 
     public mutating func update(settings: Settings) {
+        if settings.phone != self.settings.phone { forgetPhone() }
         self.settings = settings
     }
 
@@ -42,7 +62,10 @@ public struct PresenceEngine {
         var out: [Effect] = []
         switch event {
         case .enable:
-            if state == .off { state = .present }
+            if state == .off {
+                state = .present
+                reason = .typing
+            }
         case .disable:
             disable(&out)
             return out
@@ -51,7 +74,11 @@ public struct PresenceEngine {
                 // Facts still count while off, so enabling later starts from the real idle time.
                 if case .idle(let seconds) = event { _ = recordIdle(seconds, at: now) }
                 if case .micBusy(let busy) = event { micBusy = busy }
-                if case .observation(let o) = event { noteOwner(o, at: now) }
+                if case .mediaPlaying(let playing) = event { mediaPlaying = playing }
+                if case .observation(let o) = event {
+                    noteOwner(o, at: now)
+                    if o.source == .ble { notePhone(o, at: now) }
+                }
                 return []
             }
             // Evidence first: input or a close sighting that arrives just after a deadline still wins,
@@ -68,23 +95,37 @@ public struct PresenceEngine {
     private mutating func react(to event: Event, at now: Double, _ out: inout [Effect]) {
         switch event {
         case .idle(let seconds):
-            if recordIdle(seconds, at: now) { userIsBack(now, &out) }
-            if state == .present, seconds >= settings.idleBeforeCheck, now >= recheckNotBefore {
-                startChecking(now, &out)
+            if recordIdle(seconds, at: now) {
+                motionReturns = 0
+                userIsBack(now, &out)
             }
+            if state == .present, seconds >= settings.idleBeforeCheck, now >= recheckNotBefore {
+                if mediaKeepsOn { reason = .mediaPlaying } else { startChecking(now, &out) }
+            }
+        case .observation(let o) where o.source == .ble:
+            // A phone can be left on the desk, so its signal only adds to what the camera and input say.
+            notePhone(o, at: now)
         case .observation(let o):
             noteOwner(o, at: now)
             guard o.person && (o.distanceCm ?? 0) <= settings.deskRadiusCm else {
                 sleptAtDesk = false
+                // Someone looking down at a phone often shows no face, but they still move.
+                if case .grace = state, o.motion == true, motionReturns < Self.maxMotionReturns {
+                    motionReturns += 1
+                    setGrace(false, &out)
+                    startChecking(now, &out)
+                }
                 return
             }
+            motionReturns = 0
             if state == .away && sleptAtDesk { return }
             // Only waking from Away is gated: before Away any close person counts, so a mismatch
             // can never be what turns the screens off.
-            if state == .away && settings.onlyWakeForMe && o.owner != true { return }
+            let phoneVouches = state == .away && settings.onlyWakeForMe && o.owner != true && phoneIsNear(at: now)
+            if state == .away && settings.onlyWakeForMe && o.owner != true && !phoneVouches { return }
             switch state {
             case .checking, .grace, .away, .hold(until: nil):
-                backAtDesk(now, &out)
+                backAtDesk(now, o.owner == true ? .ownerSeen : phoneVouches ? .phoneNear : .seenClose, &out)
                 recheckNotBefore = now + settings.recheckAfterSeen
             default:
                 break
@@ -95,30 +136,69 @@ public struct PresenceEngine {
                 // Someone spoke, so the camera looks again (even past the cutoff) and the Owner's face
                 // can make the next Command count.
                 awayStarted = now
+                reason = awayReason
                 setSampling(.watching, &out)
             }
         case .command(.sleep):
             lastIgnoredCommand = nil
-            goAway(now, &out)
+            goAway(now, .sleepCommand, &out)
             sleptAtDesk = true
         case .command(.wake):
             lastIgnoredCommand = nil
             switch settings.wakeUpMode {
-            case .untilSleepOrDesk: startHold(until: nil, &out)
-            case .timedHold: startHold(until: now + Double(settings.wakeUpHoldMinutes) * 60, &out)
+            case .untilSleepOrDesk: startHold(until: nil, .command, &out)
+            case .timedHold: startHold(until: now + Double(settings.wakeUpHoldMinutes) * 60, .command, &out)
             }
         case .command(.hold(let minutes)):
             lastIgnoredCommand = nil
-            startHold(until: now + Double(minutes) * 60, &out)
+            startHold(until: now + Double(minutes) * 60, .holdCommand, &out)
         case .micBusy(let busy):
             micBusy = busy
-        case .tick, .enable, .disable, .mediaPlaying:
+        case .mediaPlaying(let playing):
+            // `advanceDeadlines` ends a running check or grace; Away is left alone so a video that
+            // autoplays in the dark never lights the room.
+            mediaPlaying = playing
+        case .tick, .enable, .disable:
             break
         }
     }
 
     private mutating func noteOwner(_ o: Observation, at now: Double) {
         if o.owner == true { ownerSeenAt = now }
+    }
+
+    private mutating func notePhone(_ o: Observation, at now: Double) {
+        guard let phone = settings.phone, let rssi = o.rssi else { return }
+        if let read = phoneReadAt, now - read > Self.phoneStaleAfter { forgetPhone() }
+        phoneReadAt = now
+        if rssi >= phone.nearRssi {
+            phoneNear = true
+            phoneFarSince = nil
+        } else if rssi <= phone.farRssi, phoneNear != false {
+            phoneNear = false
+            phoneFarSince = now
+        }
+    }
+
+    private mutating func forgetPhone() {
+        phoneNear = nil
+        phoneReadAt = nil
+        phoneFarSince = nil
+    }
+
+    private func phoneIsFresh(at now: Double) -> Bool {
+        settings.phone != nil && phoneReadAt.map { now - $0 <= Self.phoneStaleAfter } == true
+    }
+
+    private func phoneIsNear(at now: Double) -> Bool { phoneIsFresh(at: now) && phoneNear == true }
+
+    /// The absence a check needs before grace: shorter once the phone has clearly gone with the person.
+    private func absenceNeeded(at now: Double) -> (seconds: Double, why: PresenceReason) {
+        if phoneIsFresh(at: now), phoneNear == false, let since = phoneFarSince, now - since >= Self.phoneFarFor,
+           Self.phoneFarFor < settings.absenceBeforeAway {
+            return (Self.phoneFarFor, .phoneLeft)
+        }
+        return (settings.absenceBeforeAway, .nobodySeen)
     }
 
     /// With "Voice needs me" on, a Command counts only from someone recently recognised as the Owner,
@@ -144,14 +224,15 @@ public struct PresenceEngine {
         recheckNotBefore = -.infinity
         switch state {
         case .checking, .grace, .away, .hold(until: nil):
-            backAtDesk(now, &out)
+            backAtDesk(now, .typing, &out)
         default:
             break
         }
     }
 
-    private mutating func backAtDesk(_ now: Double, _ out: inout [Effect]) {
+    private mutating func backAtDesk(_ now: Double, _ why: PresenceReason, _ out: inout [Effect]) {
         state = .present
+        reason = why
         setGrace(false, &out)
         setScreensDark(false, &out)
         setSampling(.off, &out)
@@ -159,15 +240,18 @@ public struct PresenceEngine {
 
     private mutating func startChecking(_ now: Double, _ out: inout [Effect]) {
         state = .checking
+        reason = .checking
         checkStarted = now
         setSampling(.checking, &out)
     }
 
-    private mutating func goAway(_ now: Double, _ out: inout [Effect]) {
+    private mutating func goAway(_ now: Double, _ why: PresenceReason, _ out: inout [Effect]) {
         // "Go to sleep" said while already Away must not restart the timer and turn watching back on.
         if state == .away { return }
         awayStarted = now
         state = .away
+        reason = why
+        awayReason = why
         sleptAtDesk = false
         setGrace(false, &out)
         if !screensDark {
@@ -178,27 +262,48 @@ public struct PresenceEngine {
         setSampling(.watching, &out)
     }
 
-    private mutating func startHold(until deadline: Double?, _ out: inout [Effect]) {
+    private mutating func startHold(until deadline: Double?, _ why: PresenceReason, _ out: inout [Effect]) {
         state = .hold(until: deadline)
+        reason = why
         setGrace(false, &out)
         setScreensDark(false, &out)
         // An open-ended hold ends when the person is seen back at the desk, so the camera keeps watching.
         setSampling(deadline == nil ? .watching : .off, &out)
     }
 
+    /// A video or presentation is on screen and the person asked for that to keep the screens on.
+    private var mediaKeepsOn: Bool { mediaPlaying && settings.respectMediaPlaying }
+
     private mutating func advanceDeadlines(_ now: Double, _ out: inout [Effect]) {
+        if mediaKeepsOn {
+            switch state {
+            case .checking, .grace:
+                backAtDesk(now, .mediaPlaying, &out)
+                return
+            default:
+                break
+            }
+        }
         switch state {
-        case .checking where now - checkStarted >= settings.absenceBeforeAway:
+        case .checking where now - checkStarted >= absenceNeeded(at: now).seconds:
+            reason = absenceNeeded(at: now).why
             state = .grace(until: now + Double(settings.graceSeconds))
             setGrace(true, &out)
         case .grace(let until) where now >= until:
-            goAway(now, &out)
+            goAway(now, reason, &out)
         case .away where now - awayStarted >= settings.stopWatchingAfterMinutes * 60:
             // Long gone: stop paying for the camera. Input, "wake up" and "keep it on" still wake.
+            if sampling != .off { reason = .stoppedWatching }
             setSampling(.off, &out)
         case .hold(let until?) where now >= until:
             // Someone typing when the hold runs out is at the desk; checking now would time absence too early.
-            if lastIdle < settings.idleBeforeCheck { backAtDesk(now, &out) } else { startChecking(now, &out) }
+            if lastIdle < settings.idleBeforeCheck {
+                backAtDesk(now, .typing, &out)
+            } else if mediaKeepsOn {
+                backAtDesk(now, .mediaPlaying, &out)
+            } else {
+                startChecking(now, &out)
+            }
         default:
             break
         }
@@ -206,6 +311,8 @@ public struct PresenceEngine {
 
     private mutating func disable(_ out: inout [Effect]) {
         state = .off
+        reason = .turnedOff
+        motionReturns = 0
         setSampling(.off, &out)
         setListening(false, &out)
         setGrace(false, &out)
