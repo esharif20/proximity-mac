@@ -160,6 +160,8 @@ private struct SetupPanel: View {
                     model.shrinkRadius(below: face.distanceCm)
                 }
             }
+        case .phone:
+            PhoneStep(model: model)
         case .owner:
             OwnerStep(model: model)
         case .voice:
@@ -207,6 +209,7 @@ private struct SetupPanel: View {
         case .leanBack: "Lean back, then stand behind your chair"
         case .monitors: "Look at each monitor"
         case .bed: "Go to your bed"
+        case .phone: "Your phone or watch"
         case .owner: "Only wake for me"
         case .voice: "Say \"\(model.coordinator.triggerPhrase), wake up\""
         case .lockScreen: "Lock screen"
@@ -221,6 +224,7 @@ private struct SetupPanel: View {
         case .leanBack: "The desk radius grows to the farthest place you still count."
         case .monitors: "You still count while looking away from the camera."
         case .bed: "From here you should not count."
+        case .phone: "Optional. Its signal helps tell when you've left the desk."
         case .owner: "Optional. Only your face wakes the screens, and voice needs your face."
         case .voice: "Try a Command. It does nothing here."
         case .lockScreen: "The password prompt on your return comes from macOS, not Proximity Mac."
@@ -334,6 +338,9 @@ private struct DoneCard: View {
                 .frame(height: 150)
             LabeledContent("Desk radius", value: "\(Int(model.radiusCm)) cm")
                 .monospacedDigit()
+            if let phone = model.coordinator.settings.phone {
+                LabeledContent("Phone or watch", value: phone.name)
+            }
             Text(model.enrolled ? "Stored: 6 numbers + Face signature in Keychain" : "Stored: 6 numbers")
                 .font(.callout)
                 .foregroundStyle(.secondary)
