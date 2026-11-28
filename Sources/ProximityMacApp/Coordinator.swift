@@ -11,6 +11,9 @@ import enum PresenceCore.PresenceState
 import enum PresenceCore.SamplingMode
 import struct PresenceCore.Settings
 import struct PresenceCore.TraceLine
+import class PresenceSensors.VoiceSource
+import struct PresenceSensors.FaceSignature
+import struct PresenceSensors.FaceSignatureStore
 
 /// Runs the engine: feeds it idle time, ticks and observations, and executes the effects it returns.
 /// No presence or timing rule lives here; the engine decides and this class only acts.
@@ -31,7 +34,13 @@ final class Coordinator {
     private(set) var isCalibrating = false
     /// The last Command recognised, shown in the menu. The transcript itself is never kept.
     private(set) var lastCommand: Command?
+    /// A Face signature is in the Keychain, so the Owner settings can be turned on.
+    private(set) var hasFaceSignature = false
+    /// Shown briefly in the menu when a Command was ignored because the Owner was not seen.
+    private(set) var voiceNeedsFaceNotice = false
     let bench: BenchMode?
+    /// The menu bar glyph. It redraws itself only when what it shows changes.
+    @ObservationIgnored let icon = MenuBarIcon()
 
     var settings: Settings {
         didSet {
@@ -39,6 +48,9 @@ final class Coordinator {
             store.save(settings)
             engine.update(settings: settings)
             seams.camera.calibration = settings.calibration
+            if settings.onlyWakeForMe != oldValue.onlyWakeForMe || settings.voiceNeedsMe != oldValue.voiceNeedsMe {
+                applyOwner()
+            }
         }
     }
 
@@ -58,9 +70,17 @@ final class Coordinator {
     @ObservationIgnored private let overlay = GraceOverlay()
     @ObservationIgnored private let keepAwake = KeepAwake()
     @ObservationIgnored private let log: FeatureLog
+    @ObservationIgnored private let faceStore = FaceSignatureStore()
+    @ObservationIgnored private var faceSignature: FaceSignature?
+    @ObservationIgnored private var noticeTask: Task<Void, Never>?
     /// The rate the engine last asked for; a Settings preview may raise it but never replaces it.
     @ObservationIgnored private var engineMode: SamplingMode = .off
+    /// Settings is open, so the camera samples for the live distance readout.
     @ObservationIgnored private var previewing = false
+    /// Setup's VisionLab owns the camera, so the presence camera stays off.
+    @ObservationIgnored private var labRunning = false
+    /// While Setup's voice step shows, transcripts go to it instead of the engine.
+    @ObservationIgnored private var setupWords: ((String) -> Void)?
     @ObservationIgnored private var micBusy: Bool?
     /// The engine's clock, updated on every event without redrawing anything.
     @ObservationIgnored private var clock: Double
@@ -95,6 +115,7 @@ final class Coordinator {
         self.engine = PresenceEngine(settings: settings)
         self.log = FeatureLog()
         seams.camera.calibration = settings.calibration
+        self.faceSignature = faceStore.load()
         self.state = .off
         let start = ProcessInfo.processInfo.systemUptime
         self.now = start
@@ -111,12 +132,15 @@ final class Coordinator {
         seams.voice.onTranscript { [weak self] transcript in
             Task { @MainActor in self?.heard(transcript) }
         }
+        hasFaceSignature = faceSignature != nil
+        applyOwner()
         startTimer()
 
         if let bench, bench.pinsEngine {
             state = bench.state
             keepAwake.set(true)
             bench.effects.forEach(perform)
+            refreshIcon()
         } else if bench == .reading || store.enabled {
             send(.enable)
         }
@@ -130,8 +154,10 @@ final class Coordinator {
         if engine.state != state {
             state = engine.state
             keepAwake.set(state != .off)
+            refreshIcon()
         }
         effects.forEach(perform)
+        if case .command = event { noteIgnoredCommand() }
         if showsCountdown || graceUntil != nil { now = clock }
     }
 
@@ -147,6 +173,78 @@ final class Coordinator {
         applySampling()
     }
 
+    /// Setup's VisionLab is using the camera. Only one capture session runs at a time, so the
+    /// presence camera turns off until Setup stops.
+    func setLabRunning(_ on: Bool) {
+        labRunning = on
+        applySampling()
+    }
+
+    /// Setup's voice step: the microphone listens and the words go to Setup, not the engine, so
+    /// trying "wake up" there does not change the state.
+    func startSetupVoice(onLevel: @escaping @MainActor (Float) -> Void, onWords: @escaping (String) -> Void) {
+        setupWords = onWords
+        (seams.voice as? VoiceSource)?.onLevel { level in
+            Task { @MainActor in onLevel(level) }
+        }
+        if !listening { seams.voice.start() }
+    }
+
+    func stopSetupVoice() {
+        guard setupWords != nil else { return }
+        setupWords = nil
+        (seams.voice as? VoiceSource)?.onLevel { _ in }
+        if !listening { seams.voice.stop() }
+    }
+
+    /// Set by the menu bar label, which holds the SwiftUI `openWindow` action.
+    @ObservationIgnored var openSetupWindow: (() -> Void)?
+
+    func openSetup() {
+        openSetupWindow?()
+    }
+
+    /// Keeps a new Face signature in the Keychain. Returns false if the Keychain refused it.
+    func saveFaceSignature(_ signature: FaceSignature) -> Bool {
+        do {
+            try faceStore.save(signature)
+        } catch {
+            return false
+        }
+        faceSignature = signature
+        hasFaceSignature = true
+        applyOwner()
+        return true
+    }
+
+    /// Removes the Face signature and turns off both Owner settings, which need it.
+    func deleteFaceSignature() {
+        faceStore.delete()
+        faceSignature = nil
+        hasFaceSignature = false
+        settings.onlyWakeForMe = false
+        settings.voiceNeedsMe = false
+        applyOwner()
+    }
+
+    /// The camera only compares faces when an Owner setting asks for it, so with both off no
+    /// embedding is ever computed.
+    private func applyOwner() {
+        let wanted = settings.onlyWakeForMe || settings.voiceNeedsMe
+        seams.camera.setOwner(wanted ? faceSignature : nil)
+    }
+
+    private func noteIgnoredCommand() {
+        guard engine.lastIgnoredCommand != nil else { return }
+        voiceNeedsFaceNotice = true
+        noticeTask?.cancel()
+        noticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            self?.voiceNeedsFaceNotice = false
+        }
+    }
+
     func calibrate() async {
         guard !isCalibrating else { return }
         isCalibrating = true
@@ -156,14 +254,26 @@ final class Coordinator {
         }
     }
 
+    private func refreshIcon() {
+        icon.show(state, listening: listening, graceSeconds: settings.graceSeconds)
+    }
+
     private func heard(_ transcript: String) {
+        if let setupWords {
+            setupWords(transcript)
+            return
+        }
         guard let command = CommandParser.parse(transcript, triggerWord: settings.triggerWord) else { return }
         lastCommand = command
         send(.command(command))
     }
 
     private func applySampling() {
-        seams.camera.setMode(previewing && engineMode == .off ? .checking : engineMode)
+        if labRunning {
+            seams.camera.setMode(.off)
+        } else {
+            seams.camera.setMode(previewing && engineMode == .off ? .checking : engineMode)
+        }
     }
 
     private func startTimer() {
@@ -218,7 +328,9 @@ final class Coordinator {
         case .listen(let on):
             guard on != listening else { return }
             listening = on
-            on ? seams.voice.start() : seams.voice.stop()
+            refreshIcon()
+            // Setup's voice step keeps the microphone on until it closes.
+            if on { seams.voice.start() } else if setupWords == nil { seams.voice.stop() }
         case .showGrace(let seconds):
             now = clock
             graceUntil = clock + Double(seconds)
