@@ -1,6 +1,6 @@
 import PresenceCore
 
-/// The words and icon the menu bar shows for each state.
+/// The words the menu shows for each state. The icon is drawn by `MenuBarIcon`.
 enum StatusText {
     static func line(_ state: PresenceState, now: Double) -> String {
         switch state {
@@ -11,17 +11,6 @@ enum StatusText {
         case .away: "Away"
         case .hold(nil): "Held until you sleep it"
         case .hold(let until?): "Held for \(minutesLeft(until, now)) min"
-        }
-    }
-
-    static func symbol(_ state: PresenceState) -> String {
-        switch state {
-        case .off: "person.crop.circle.badge.xmark"
-        case .present: "person.crop.circle.fill"
-        case .checking: "person.crop.circle.badge.questionmark"
-        case .grace: "timer"
-        case .away: "person.crop.circle.dashed"
-        case .hold: "pin.circle.fill"
         }
     }
 

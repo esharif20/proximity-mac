@@ -22,6 +22,10 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         var calibrationWidths: [Double]?
         /// When calibration saw its first frame, so its 3 s window excludes camera warm-up.
         var calibrationStart: Double?
+        /// The owner's face signature; nil means recognition is off and no model is loaded.
+        var signature: FaceSignature?
+        /// An owner check in progress, holding its sample until the following frames decide `owner`.
+        var ownerCheck: OwnerCheck?
 
         var wantsCamera: Bool { mode != .off || calibrationWidths != nil }
     }
@@ -33,6 +37,8 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
     private lazy var delegate = FrameDelegate(owner: self)
     /// Built once and used only on `frameQueue`: rebuilding Vision requests per frame reloads their models.
     private lazy var vision = VisionPipeline()
+    /// Created on `frameQueue` the first time a signature is set, so the model loads only when needed.
+    private var recognizer: FaceRecognizer?
 
     public init() {}
 
@@ -46,9 +52,18 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         state.withLock { $0.handler = handler }
     }
 
+    /// Turns owner recognition on with the owner's signature, or off with nil.
+    public func setOwner(_ signature: FaceSignature?) {
+        state.withLock { s in
+            s.signature = signature
+            s.ownerCheck = nil
+        }
+    }
+
     public func setMode(_ mode: SamplingMode) {
         state.withLock { s in
             s.mode = mode
+            s.ownerCheck = nil
             if s.calibrationWidths == nil { s.throttle = FrameThrottle(interval: FrameThrottle.interval(for: mode)) }
         }
         reconcile()
@@ -63,6 +78,7 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         state.withLock { s in
             s.calibrationWidths = []
             s.calibrationStart = nil
+            s.ownerCheck = nil
             s.throttle = FrameThrottle(interval: 0.1)
         }
         reconcile()
@@ -187,12 +203,23 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
 
     fileprivate func handle(_ sampleBuffer: CMSampleBuffer) {
         let now = ProcessInfo.processInfo.systemUptime
-        let (take, calibrating) = state.withLock { s in
+        let (take, calibrating, continuing, signature) = state.withLock { s in
             if s.calibrationWidths != nil, s.calibrationStart == nil { s.calibrationStart = now }
-            return (s.throttle.shouldSample(at: now), s.calibrationWidths != nil)
+            if let check = s.ownerCheck, check.isStale(at: now) { s.ownerCheck = nil }
+            // The frames right after a sample finish its owner check, whatever the throttle says.
+            if s.ownerCheck != nil { return (true, false, true, s.signature) }
+            return (s.throttle.shouldSample(at: now), s.calibrationWidths != nil, false, s.signature)
         }
         guard take, let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let imageWidth = Double(CVPixelBufferGetWidth(pixels))
+
+        if continuing, let signature {
+            // The largest face is the one checked, so a larger stranger in front makes the answer false.
+            let match = vision.largestFace(in: pixels, imageWidth: imageWidth)
+                .map { ownerMatches(pixels, face: $0.observation, signature: signature) } ?? false
+            finishOwnerCheck(match)
+            return
+        }
 
         guard let face = vision.largestFace(in: pixels, imageWidth: imageWidth) else {
             if calibrating { return }
@@ -203,12 +230,44 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
             return
         }
         if calibrating {
-            state.withLock { $0.calibrationWidths?.append(face.widthPx * Self.captureWidthPx / imageWidth) }
+            state.withLock { $0.calibrationWidths?.append(face.measure.widthPx * Self.captureWidthPx / imageWidth) }
             return
         }
-        let bodyWidth: Double? = nil
         let (handler, calibration) = state.withLock { ($0.handler, $0.calibration) }
-        handler?(Self.observation(face: face, bodyWidthPx: bodyWidth, imageWidthPx: imageWidth, calibration: calibration))
+        let observation = Self.observation(
+            face: face.measure, bodyWidthPx: nil, imageWidthPx: imageWidth, calibration: calibration)
+        guard let signature, OwnerCheck.wanted(for: observation) else {
+            handler?(observation)
+            return
+        }
+        let match = ownerMatches(pixels, face: face.observation, signature: signature)
+        state.withLock { $0.ownerCheck = OwnerCheck(observation: observation, started: now) }
+        finishOwnerCheck(match)
+    }
+
+    /// Records one frame's answer and delivers the held sample once the check has decided.
+    private func finishOwnerCheck(_ match: Bool) {
+        let decided = state.withLock { s -> (Observation, (@Sendable (Observation) -> Void)?)? in
+            guard var check = s.ownerCheck else { return nil }
+            guard let owner = check.record(match) else {
+                s.ownerCheck = check
+                return nil
+            }
+            s.ownerCheck = nil
+            var observation = check.observation
+            observation.owner = owner
+            return (observation, s.handler)
+        }
+        if let (observation, handler) = decided { handler?(observation) }
+    }
+
+    /// Runs on `frameQueue` only.
+    private func ownerMatches(_ pixels: CVPixelBuffer, face: VNFaceObservation, signature: FaceSignature) -> Bool {
+        if recognizer == nil { recognizer = FaceRecognizer() }
+        guard let recognizer, let aligned = vision.landmarks(of: face, in: pixels),
+              let embedding = recognizer.embedding(of: pixels, face: aligned)
+        else { return false }
+        return FaceRecognizer.matches(embedding, signature)
     }
 
     // MARK: - Pure decisions, tested without a camera
@@ -241,6 +300,39 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
             facing = abs(yaw) <= maxYawDegrees && abs(pitch) <= maxPitchDegrees
         }
         return Observation(source: .camera, person: true, distanceCm: distance, facingScreen: facing)
+    }
+}
+
+/// One owner measurement: the sampled frame plus the next frames at the sensor rate (about 130 ms at
+/// 15 fps). Three frames in a row must match, so one lucky frame of a stranger never counts as the owner.
+struct OwnerCheck {
+    static let frames = 3
+    /// Beyond this the face is too small for a reliable embedding, so `owner` stays unknown.
+    static let maxDistanceCm = 150.0
+    /// A check whose frames stopped coming (mode change, camera stopped) is dropped, not delivered late.
+    static let maxAge = 1.0
+
+    var observation: Observation
+    var started: Double
+    private(set) var matched = 0
+
+    init(observation: Observation, started: Double) {
+        self.observation = observation
+        self.started = started
+    }
+
+    static func wanted(for observation: Observation) -> Bool {
+        guard observation.person, let distance = observation.distanceCm else { return false }
+        return distance <= maxDistanceCm
+    }
+
+    func isStale(at now: Double) -> Bool { now - started > Self.maxAge }
+
+    /// nil while more frames are needed. The first miss decides false at once, saving the rest.
+    mutating func record(_ match: Bool) -> Bool? {
+        guard match else { return false }
+        matched += 1
+        return matched >= Self.frames ? true : nil
     }
 }
 
@@ -306,14 +398,25 @@ private final class VisionPipeline {
         return request
     }()
 
-    func largestFace(in pixels: CVPixelBuffer, imageWidth: Double) -> CameraSource.FaceMeasure? {
+    /// Built on first use, so a Mac without an owner signature never loads the landmarks model.
+    private lazy var landmarks = VNDetectFaceLandmarksRequest()
+
+    func largestFace(in pixels: CVPixelBuffer, imageWidth: Double) -> (measure: CameraSource.FaceMeasure, observation: VNFaceObservation)? {
         guard (try? handler.perform([faces], on: pixels)) != nil,
               let face = faces.results?.max(by: { $0.boundingBox.width < $1.boundingBox.width })
         else { return nil }
-        return CameraSource.FaceMeasure(
+        let measure = CameraSource.FaceMeasure(
             widthPx: face.boundingBox.width * imageWidth,
             yawDegrees: face.yaw.map { $0.doubleValue * 180 / .pi },
             pitchDegrees: face.pitch.map { $0.doubleValue * 180 / .pi })
+        return (measure, face)
+    }
+
+    /// Landmarks for one face already found, which the recogniser needs to align it.
+    func landmarks(of face: VNFaceObservation, in pixels: CVPixelBuffer) -> VNFaceObservation? {
+        landmarks.inputFaceObservations = [face]
+        guard (try? handler.perform([landmarks], on: pixels)) != nil else { return nil }
+        return landmarks.results?.first
     }
 
     /// The widest upper body as a share of the image width.
