@@ -7,6 +7,7 @@ import enum PresenceCore.CommandParser
 import struct PresenceCore.PresenceEngine
 import enum PresenceCore.Effect
 import enum PresenceCore.Event
+import enum PresenceCore.PresenceReason
 import enum PresenceCore.PresenceState
 import enum PresenceCore.SamplingMode
 import struct PresenceCore.Settings
@@ -60,6 +61,8 @@ final class Coordinator {
             engine.update(settings: settings)
             seams.camera.calibration = settings.calibration
             seams.camera.deskRadiusCm = settings.deskRadiusCm
+            if settings.keepBuiltInOn != oldValue.keepBuiltInOn { applyKeepBuiltInOn() }
+            if settings.phone != oldValue.phone { seams.ble.identifier = settings.phone?.identifier }
             if settings.onlyWakeForMe != oldValue.onlyWakeForMe || settings.voiceNeedsMe != oldValue.voiceNeedsMe {
                 applyOwner()
             }
@@ -81,6 +84,7 @@ final class Coordinator {
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private let overlay = GraceOverlay()
     @ObservationIgnored private let keepAwake = KeepAwake()
+    @ObservationIgnored private let monitorsOff: MonitorsOff
     @ObservationIgnored private let log: FeatureLog
     @ObservationIgnored private let faceStore = FaceSignatureStore()
     @ObservationIgnored private var faceSignature: FaceSignature?
@@ -94,6 +98,13 @@ final class Coordinator {
     /// While Setup's voice step shows, transcripts go to it instead of the engine.
     @ObservationIgnored private var setupWords: ((String) -> Void)?
     @ObservationIgnored private var micBusy: Bool?
+    /// The last media reading sent, so only changes reach the engine. Nil while off, so turning on
+    /// sends the current reading.
+    @ObservationIgnored private var mediaPlaying: Bool?
+    @ObservationIgnored private var mediaCheckedAt = -Double.infinity
+    /// For the Why line, read when the menu draws rather than redrawn every second.
+    @ObservationIgnored private var lastIdle = 0.0
+    @ObservationIgnored private var lastSeenAt: Double?
     /// The engine's clock, updated on every event without redrawing anything.
     @ObservationIgnored private var clock: Double
     /// Mirrors the stored setting so the per-event check doesn't read UserDefaults.
@@ -128,6 +139,9 @@ final class Coordinator {
         self.log = FeatureLog()
         seams.camera.calibration = settings.calibration
         seams.camera.deskRadiusCm = settings.deskRadiusCm
+        seams.display.keepBuiltInOn = settings.keepBuiltInOn
+        seams.ble.identifier = settings.phone?.identifier
+        self.monitorsOff = MonitorsOff(display: seams.display)
         self.faceSignature = faceStore.load()
         self.state = .off
         let start = ProcessInfo.processInfo.systemUptime
@@ -140,12 +154,16 @@ final class Coordinator {
             Task { @MainActor in
                 if let distance = observation.distanceCm { self?.lastDistanceCm = distance }
                 if let brightness = observation.brightness { self?.lastBrightness = brightness }
-                self?.send(.observation(observation))
+                self?.observed(observation)
             }
+        }
+        seams.ble.onObservation { [weak self] observation in
+            Task { @MainActor in self?.send(.observation(observation)) }
         }
         seams.voice.onTranscript { [weak self] transcript in
             Task { @MainActor in self?.heard(transcript) }
         }
+        monitorsOff.onInput = { [weak self] in self?.inputSeen() }
         hasFaceSignature = faceSignature != nil
         applyOwner()
         startTimer()
@@ -283,11 +301,50 @@ final class Coordinator {
     }
 
     private func applySampling() {
-        if labRunning {
-            seams.camera.setMode(.off)
-        } else {
-            seams.camera.setMode(previewing && engineMode == .off ? .checking : engineMode)
+        let mode = labRunning ? .off : (previewing && engineMode == .off ? .checking : engineMode)
+        seams.camera.setMode(mode)
+        // The phone link samples whenever the camera does; with no phone linked it stays off.
+        seams.ble.setMode(mode)
+    }
+
+    private func observed(_ observation: PresenceObservation) {
+        if observation.person { lastSeenAt = ProcessInfo.processInfo.systemUptime }
+        // A dim room and something moving: light the Away screen so the camera can see a face.
+        if case .away = state, observation.motion == true, let brightness = observation.brightness,
+           brightness < Self.glowBelowBrightness {
+            monitorsOff.glow(at: ProcessInfo.processInfo.systemUptime)
         }
+        send(.observation(observation))
+    }
+
+    static let glowBelowBrightness = 0.25
+
+    /// Why the engine is where it is, in plain words, or nil when that is already obvious (Off).
+    func whyLine() -> String? {
+        let now = ProcessInfo.processInfo.systemUptime
+        return StatusText.why(
+            engine.reason,
+            idleSeconds: seams.idle.secondsSinceInput(),
+            distanceCm: lastDistanceCm,
+            unseenSeconds: lastSeenAt.map { now - $0 } ?? lastIdle)
+    }
+
+    /// Mouse movement over a black monitor: read idle time now rather than at the next tick, so the
+    /// screens come back within a second. The engine still decides.
+    private func inputSeen() {
+        send(.idle(seconds: seams.idle.secondsSinceInput()))
+    }
+
+    /// Switching Monitors Off off while Away must not leave the externals black or the
+    /// display-sleep assertion held.
+    private func applyKeepBuiltInOn() {
+        seams.display.keepBuiltInOn = settings.keepBuiltInOn
+        if !settings.keepBuiltInOn { leaveMonitorsOff() }
+    }
+
+    private func leaveMonitorsOff() {
+        monitorsOff.hide()
+        keepAwake.holdDisplays(false)
     }
 
     private func startTimer() {
@@ -309,7 +366,9 @@ final class Coordinator {
 
     private func tick() {
         let idle = seams.idle.secondsSinceInput()
+        lastIdle = idle
         send(.idle(seconds: idle))
+        pollMedia()
         // The mic only matters when the engine could ask to listen, so skip the CoreAudio query
         // while the person is typing. Only changes go to the engine, so a call starting is one event.
         if mightListen(idle: idle) {
@@ -322,6 +381,22 @@ final class Coordinator {
         send(.tick)
     }
 
+    /// Every 5 s while on: a film or call holding the display awake keeps the screens on.
+    private func pollMedia() {
+        guard state != .off else {
+            mediaPlaying = nil
+            return
+        }
+        guard clock - mediaCheckedAt >= Self.mediaPollSeconds else { return }
+        mediaCheckedAt = clock
+        let playing = seams.media.mediaPlaying()
+        guard playing != mediaPlaying else { return }
+        mediaPlaying = playing
+        send(.mediaPlaying(playing))
+    }
+
+    static let mediaPollSeconds = 5.0
+
     private func mightListen(idle: Double) -> Bool {
         guard settings.voiceEnabled else { return false }
         switch state {
@@ -333,8 +408,15 @@ final class Coordinator {
 
     private func perform(_ effect: Effect) {
         switch effect {
-        case .screensOff: seams.display.screensOff()
-        case .screensOn: seams.display.screensOn()
+        case .screensOff:
+            seams.display.screensOff()
+            if settings.keepBuiltInOn {
+                monitorsOff.show()
+                keepAwake.holdDisplays(true)
+            }
+        case .screensOn:
+            leaveMonitorsOff()
+            seams.display.screensOn()
         case .lock: seams.display.lock()
         case .sample(let mode):
             engineMode = mode
