@@ -11,7 +11,7 @@ import struct PresenceSensors.LabFrame
 @MainActor @Observable
 final class SetupModel {
     enum Step: Int, CaseIterable {
-        case welcome, sit, leanBack, monitors, bed, owner, voice, done
+        case welcome, sit, leanBack, monitors, bed, owner, voice, lockScreen, done
     }
 
     enum Direction { case forward, back }

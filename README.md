@@ -29,6 +29,11 @@ Setup opens on first launch, and any time from the menu with "Run Setup…". It 
 5. Go to your bed. It should say "Not counted"; if not, Setup offers to shrink the radius.
 6. Optionally enrol your face as the Owner (see below). Skip keeps it off.
 7. Say "Screen, wake up" to test a Command.
+8. See how long macOS waits before it asks for your password (the Lock screen step).
+
+## The macOS lock delay
+
+If macOS asks for your password or Touch ID when you come back, that is macOS, not Proximity Mac. System Settings > Lock Screen has "Require password after screen saver begins or display is turned off", and once Screens Off has lasted longer than that delay, macOS locks. Setup and Settings show the current delay and a button to open Lock Screen settings. Proximity Mac never changes it. Turn on "Lock when away" if you want the Mac to lock as soon as you are Away.
 
 ## Only wake for me
 
