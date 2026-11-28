@@ -400,3 +400,129 @@ private struct Driver {
         #expect(e.state == .away)
     }
 }
+
+@Suite struct PresenceEngineStopWatchingTests {
+    /// Away at 70 with the default 15-minute cutoff, so watching stops at 970.
+    private func awayWithCameraOff() -> Driver {
+        var d = Driver()
+        d.toAway()
+        return d
+    }
+
+    @Test func watchingStopsAfterTheCutoffAndStaysAway() {
+        var d = Driver()
+        d.toAway()
+        #expect(d.at(969, .tick).isEmpty)
+        #expect(d.at(970, .tick) == [.sample(.off)])
+        #expect(d.state == .away)
+        #expect(d.at(2000, .tick).isEmpty)
+        // No observations arrive with the camera off, but a stray one must not wake for a far person.
+        #expect(d.at(2001, far).isEmpty)
+    }
+
+    @Test func inputWakeAndHoldStillWakeAfterTheCutoff() {
+        var a = awayWithCameraOff()
+        a.at(970, .tick)
+        let input = a.at(1000, .idle(seconds: 0.5))
+        #expect(input.contains(.screensOn))
+        #expect(a.state == .present)
+
+        var b = awayWithCameraOff()
+        b.at(970, .tick)
+        #expect(b.at(1000, .command(.wake)).contains(.screensOn))
+
+        var c = awayWithCameraOff()
+        c.at(970, .tick)
+        #expect(c.at(1000, .command(.hold(minutes: 5))).contains(.screensOn))
+        #expect(c.state == .hold(until: 1300))
+    }
+
+    @Test func reEnteringAwayRestartsTheTimer() {
+        var d = Driver()
+        d.toAway()
+        d.at(970, .tick)
+        // Back at 1000, then idle again: checking at 1030, grace at 1060, Away at 1070.
+        d.at(1000, .idle(seconds: 0))
+        d.at(1030, .idle(seconds: 30))
+        d.at(1045, nobody)
+        d.at(1060, nobody)
+        #expect(d.at(1070, .tick).contains(.sample(.watching)))
+        #expect(d.state == .away)
+        #expect(d.at(1969, .tick).isEmpty)
+        #expect(d.at(1970, .tick) == [.sample(.off)])
+    }
+
+    @Test func sleepCommandWhileAwayDoesNotRestartWatching() {
+        var d = Driver()
+        d.toAway()
+        d.at(970, .tick)
+        #expect(!d.at(1000, .command(.sleep)).contains(.sample(.watching)))
+    }
+
+    @Test func aShorterSettingAppliesToTheCurrentAway() {
+        var d = Driver()
+        d.toAway()
+        var s = Settings()
+        s.stopWatchingAfterMinutes = 1
+        d.engine.update(settings: s)
+        #expect(d.at(130, .tick) == [.sample(.off)])
+    }
+
+    @Test func listeningKeepsItsRulesAfterTheCutoff() {
+        var d = Driver()
+        d.toAway()
+        let off = d.at(970, .tick)
+        #expect(!off.contains(.listen(false)))
+        #expect(d.at(1000, .micBusy(true)) == [.listen(false)])
+        #expect(d.at(1010, .micBusy(false)) == [.listen(true)])
+    }
+
+    /// The resource rule, extended: once an Away passes its cutoff, no watching until the state leaves Away.
+    @Test func noWatchingAfterTheCutoffUntilAwayEnds() {
+        var reached = 0
+        for seed in UInt64(5000)..<5300 {
+            var g = Gen(seed: seed)
+            var s = Settings()
+            s.idleBeforeCheck = .random(in: 1...20, using: &g)
+            s.absenceBeforeAway = .random(in: 1...20, using: &g)
+            s.graceSeconds = .random(in: 0...10, using: &g)
+            s.recheckAfterSeen = .random(in: 0...60, using: &g)
+            s.stopWatchingAfterMinutes = .random(in: 0.05...2, using: &g)
+            var engine = PresenceEngine(settings: s)
+            _ = engine.handle(.enable, at: 0)
+            var t = 0.0, idle = 0.0
+            var awaySince: Double?
+            var sampling = SamplingMode.off
+            var reachedCutoff = false
+            for _ in 0..<600 {
+                let dt = Double.random(in: 0.1...5, using: &g)
+                t += dt
+                let event: Event
+                switch Int.random(in: 0..<30, using: &g) {
+                case 0: idle = 0; event = .idle(seconds: 0)
+                case 1: event = .command(.wake)
+                case 2: event = .command(.sleep)
+                case 3..<12: idle += dt; event = .idle(seconds: idle)
+                case 12..<18: event = Bool.random(using: &g) ? nobody : far
+                case 18: event = close
+                default: event = .tick
+                }
+                let wasAway = engine.state == .away
+                let effects = engine.handle(event, at: t)
+                for case .sample(let m) in effects { sampling = m }
+                if engine.state == .away {
+                    if !wasAway { awaySince = t }
+                    if wasAway, let since = awaySince, t - since >= s.stopWatchingAfterMinutes * 60 {
+                        reachedCutoff = true
+                        #expect(sampling == .off, "seed \(seed) t \(t) \(event)")
+                        #expect(!effects.contains(.sample(.watching)), "seed \(seed) t \(t) \(event)")
+                    }
+                } else {
+                    awaySince = nil
+                }
+            }
+            reached += reachedCutoff ? 1 : 0
+        }
+        #expect(reached > 20, "the random runs must actually reach the cutoff: \(reached)")
+    }
+}
