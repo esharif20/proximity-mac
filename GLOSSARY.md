@@ -33,3 +33,11 @@
 **Owner**: the person whose Face signature is enrolled. With "Only wake for me" on, only the Owner's face wakes the screens from Away.
 
 **Face signature**: a short list of numbers (a face embedding) computed from the Owner's face during Setup. It is kept only in the Mac's Keychain, never as an image, and can be deleted in Settings. _Avoid_: Face ID, which is Apple's 3D system.
+
+**Monitors Off**: the default form of Screens Off. External displays go black while the built-in display shows the Away screen, so macOS never sleeps the displays and asks for no password on return.
+
+**Away screen**: the dark screen on the built-in display during Monitors Off, with a small clock. It glows softly for a moment when the camera sees movement in a dim room, to light the person's face.
+
+**Phone link**: the person's own phone or watch, chosen in Setup. Its Bluetooth signal says whether it is near the desk. It never wakes the screens by itself, because a phone can be left on the desk.
+
+**Reason**: why the screens are on or off right now, shown as one line in the menu.

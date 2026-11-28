@@ -36,3 +36,10 @@ import Testing
     #expect(settings.setupDone == false)
     #expect(Observation(source: .camera, person: true).owner == nil)
 }
+
+@Test func monitorsOffAndMediaAreOnByDefaultAndNoPhoneIsLinked() throws {
+    let settings = try JSONDecoder().decode(Settings.self, from: Data("{}".utf8))
+    #expect(settings.keepBuiltInOn)
+    #expect(settings.respectMediaPlaying)
+    #expect(settings.phone == nil)
+}

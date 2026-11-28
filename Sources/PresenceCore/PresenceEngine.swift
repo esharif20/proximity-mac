@@ -112,7 +112,7 @@ public struct PresenceEngine {
             startHold(until: now + Double(minutes) * 60, &out)
         case .micBusy(let busy):
             micBusy = busy
-        case .tick, .enable, .disable:
+        case .tick, .enable, .disable, .mediaPlaying:
             break
         }
     }

@@ -1,36 +1,55 @@
-lane detect: GH-46 GH-47 GH-48
-lane app: GH-49
-skills detect: write-swift tdd
-skills app: write-swift apple-design emil-design-eng
-seat detect: lane-builder (camera pipeline, Vision, hard detection logic)
-seat app: lane-builder-standard
-review: GH-46 GH-47
+lane engine: GH-52 GH-53 GH-54
+lane camera: GH-55
+lane monitors: GH-56 GH-57
+lane ble: GH-58 GH-59
+skills engine: write-swift tdd
+skills camera: write-swift
+skills monitors: write-swift apple-design emil-design-eng
+skills ble: write-swift apple-design emil-design-eng
+seat engine: lane-builder (the state machine decides every Screens Off)
+seat camera: lane-builder (Vision pipeline, budget)
+seat monitors: lane-builder (displays must never get stuck dark)
+seat ble: lane-builder-standard
+review: GH-56 GH-52 GH-54
 
-# Proximity Mac M6 plan: robust detection
+# Proximity Mac M7 plan: Monitors Off, still-at-desk, films, phone link, Why
 
-The person's first real test: standing at the desk and waving while Away did not wake the screens, and on return macOS asked for Touch ID (its own 5-minute lock delay). M6 makes detection faster and wider (motion gate, body pose, hands, low light) and explains the lock delay.
-Repo, PR flow and prose rules as before: one branch and PR per lane, `lane <l> ready <sha>` to the Lead.
+The person is away for about 2 hours; build all of it. Decisions: ADR 0005 (Monitors Off, built-in may stay on), memory budget 150 MB with the camera on (bench/budget.json updated). Bug to fix first: sitting at the desk looking at a phone started the grace countdown (GH-52 engine, GH-55 camera).
+PR flow as before: one branch and PR per lane, `lane <l> ready <sha>` to the Lead. Never turn the person's screens off while testing (no pmset displaysleepnow, no gamma changes on the live displays outside a unit test that restores them at once).
 
 ## Issues, verify command
-- GH-46 (detect) Motion-gated vision, brightness per Observation. `scripts/test.sh --filter CameraSource && scripts/test.sh --filter MotionGate`
-- GH-47 (detect) Body pose for standing, hands for waving. `scripts/test.sh --filter CameraSource && scripts/test.sh --filter Distance`
-- GH-48 (detect) Low light: longer exposure while watching, `CameraSource.darkBrightness`. `scripts/test.sh --filter CameraSource`
-- GH-49 (app) Lock delay step in Setup and Settings, "Too dark to see you", README. `swift build && scripts/bundle.sh`
+- GH-52 (engine) Motion during grace returns to checking (max 3 in a row), `reason`. `scripts/test.sh --filter PresenceEngine && scripts/test.sh --filter TraceReplay`
+- GH-53 (engine) Media playing keeps screens on, MediaUsage sensor. `scripts/test.sh --filter PresenceEngine && scripts/test.sh --filter MediaUsage`
+- GH-54 (engine) Phone link fusion. `scripts/test.sh --filter PresenceEngine`
+- GH-55 (camera) Full body chain on every Checking pass, Observation.motion. `scripts/test.sh --filter CameraSource && scripts/test.sh --filter MotionGate`
+- GH-56 (monitors) Monitors Off: externals dark, built-in on, restore on every way out. `swift build && scripts/test.sh --filter PresenceSensorsTests`
+- GH-57 (monitors) Away screen and glow, Why line, wiring (MediaUsage, BLESource, keepBuiltInOn). `swift build && scripts/bundle.sh && scripts/bench.sh active 1`
+- GH-58 (ble) BLESource. `scripts/test.sh --filter BLESource`
+- GH-59 (ble) Setup step and Settings for phone, Monitors Off, films; README. `swift build`
 
 ## Files each lane owns
-- detect: `Sources/PresenceSensors/**`, `Sources/PresenceCore/Distance.swift`, `Tests/PresenceSensorsTests/**`, `Tests/PresenceCoreTests/DistanceTests.swift`, `docs/spikes/**`, `scripts/bench.sh`, `bench/**`.
-- app: `Sources/ProximityMacApp/**`, `README.md`, `Resources/**`, `scripts/bundle.sh`, `docs/design/**`.
-- Lead only: `Sources/PresenceCore/Types.swift`, `Tests/PresenceCoreTests/ContractTests.swift`, `GLOSSARY.md`, `docs/adr/**`, `docs/ARCHITECTURE.md`, `scripts/test.sh`.
+- engine: `Sources/PresenceCore/PresenceEngine.swift`, `Sources/PresenceCore/TraceReplay.swift`, `Tests/PresenceCoreTests/PresenceEngineTests.swift`, `Tests/PresenceCoreTests/TraceReplayTests.swift`, `Tests/PresenceCoreTests/Fixtures/**`, `Sources/PresenceSensors/MediaUsage.swift`, `Tests/PresenceSensorsTests/MediaUsageTests.swift`.
+- camera: `Sources/PresenceSensors/CameraSource.swift`, `BodyAndHands.swift`, `MotionGate.swift`, `Sources/PresenceCore/Distance.swift`, `Tests/PresenceSensorsTests/CameraSourceTests.swift`, `MotionGateTests.swift`, `BodyAndHandsTests.swift` (or wherever those tests live now), `Tests/PresenceCoreTests/DistanceTests.swift`, `docs/spikes/camera-cost.md`, `docs/spikes/display-and-camera.md`, `scripts/bench.sh`, `bench/**`.
+- monitors: `Sources/PresenceSensors/DisplayControl.swift`, `Tests/PresenceSensorsTests/PresenceSensorsTests.swift`, `Sources/ProximityMacApp/**` except `Setup/**` and `SettingsView.swift`, `Resources/**`, `scripts/bundle.sh`.
+- ble: `Sources/PresenceSensors/BLESource.swift`, `Tests/PresenceSensorsTests/BLESourceTests.swift`, `docs/spikes/ble.md`, `Sources/ProximityMacApp/Setup/**`, `Sources/ProximityMacApp/SettingsView.swift`, `README.md`.
+- Lead only: `Sources/PresenceCore/Types.swift`, `Tests/PresenceCoreTests/ContractTests.swift`, `GLOSSARY.md`, `docs/adr/**`, `docs/ARCHITECTURE.md`, `scripts/test.sh`, `Package.swift`.
 
-## New contract (M6)
-- `Observation.brightness: Double?` (0..1 mean frame brightness, init param `brightness: Double? = nil`), already in Types.swift.
-- `public static let darkBrightness: Double` on `CameraSource` (GH-48); the app uses 0.08 until it lands.
-- The engine is unchanged: hands and bodies arrive as ordinary close Observations with `owner: nil`.
+## M7 contract (Types.swift, scaffold commit)
+- `Observation.rssi: Double?` (ble only), `Observation.motion: Bool?` (camera); init params default nil.
+- `Event.mediaPlaying(Bool)`. The engine currently ignores it (`case .tick, .enable, .disable, .mediaPlaying: break`); GH-53 implements it.
+- `public enum PresenceReason: String { turnedOff, typing, seenClose, ownerSeen, phoneNear, mediaPlaying, command, holdCommand, checking, nobodySeen, phoneLeft, sleepCommand, stoppedWatching }`; `PresenceEngine.reason: PresenceReason { get }` (GH-52).
+- `public struct PhoneLink { identifier: String; name: String; nearRssi: Double; farRssi: Double }`; `Settings.phone: PhoneLink?`, `Settings.keepBuiltInOn = true`, `Settings.respectMediaPlaying = true`.
+- `public protocol MediaReading: Sendable { func mediaPlaying() -> Bool }`; `public struct MediaUsage: MediaReading { public init() }` (GH-53).
+- `public final class BLESource: PresenceSource { public init(); public var identifier: String?; public func scan(seconds: Double) async -> [FoundDevice] }`, `public struct FoundDevice: Sendable, Identifiable, Equatable { id: String; name: String; rssi: Double }` (GH-58).
+- `DisplayControl.keepBuiltInOn: Bool` (GH-56).
+- Info.plist already has `NSBluetoothAlwaysUsageDescription`.
+- Cross-lane: the monitors lane wires MediaUsage, BLESource and reason into the Coordinator against these names; until they land, stub them in the app only behind the same names and delete the stub after `git merge main`. The ble lane's Settings toggles bind to `coordinator.settings.keepBuiltInOn` / `.respectMediaPlaying` / `.phone`, which exist already.
 
-## Code map (M6)
-- `Sources/PresenceSensors/CameraSource.swift`: `handle(_ sampleBuffer:)` about line 203 (throttle, owner check, face then body fallback), `observation(face:bodyWidthPx:imageWidthPx:calibration:)`, `FrameThrottle`, `sensorFrameRate` about 193, `makeSession`, `VisionPass.largestFace` / `widestUpperBody` at the end.
-- `Sources/PresenceCore/Distance.swift`: `estimate` 14, `calibration` 28.
-- `Sources/ProximityMacApp/Setup/`: SetupModel.swift (steps), SetupView.swift, RoomMap.swift, VisionOverlay.swift. `SettingsView.swift` Owner and Presence sections. `Coordinator.swift` holds `lastDistanceCm` from observations.
+## Code map (M7)
+- `Sources/PresenceCore/PresenceEngine.swift`: `react(to:at:)` (observation branch, commands, `.tick, .enable, .disable, .mediaPlaying` no-op), `userIsBack`, `backAtDesk`, `startChecking`, `goAway`, `startHold`, `advanceDeadlines`, `updateListening`, effect setters at the end.
+- `Sources/PresenceSensors/CameraSource.swift`: `handle(_ sampleBuffer:)` (motion gate, VisionSchedule, owner check, `withoutFace` chain face > body pose > body box > hands), `deskRadiusCm`, `darkBrightness` 0.08.
+- `Sources/PresenceSensors/DisplayControl.swift`: `Actions` (sleepDisplays via pmset, declareUserActivity, lockSession), `screensOff` 23, `screensOn` 24, `lock` 25.
+- `Sources/ProximityMacApp/`: `Coordinator.swift` (`settings` didSet pushes calibration and deskRadiusCm to the camera, `send`, `perform(effect)`, `tick` 1 s), `Seams.swift`, `KeepAwake.swift` (`set(_:)` PreventUserIdleSystemSleep), `GraceOverlay.swift` (per-screen panels: copy its pattern for black windows), `ProximityMacApp.swift` (MenuBarExtra, MenuContent), `StatusText.swift`, `MenuBarIcon.swift`, `Setup/` (SetupModel, SetupView, RoomMap, VisionOverlay), `SettingsView.swift`.
 
 ## M5 contract (still current)
 

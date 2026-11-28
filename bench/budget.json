@@ -10,12 +10,12 @@
     "checking": {
       "cameraOnCpuPercent": 5.0,
       "wakeupsPerSecond": 5,
-      "cameraOnMemoryMB": 130
+      "cameraOnMemoryMB": 150
     },
     "away": {
       "cameraOnCpuPercent": 5.0,
       "wakeupsPerSecond": 5,
-      "cameraOnMemoryMB": 130
+      "cameraOnMemoryMB": 150
     },
     "listening": {
       "cpuPercent": 1.0,
@@ -25,7 +25,7 @@
     "reading": {
       "cpuPercent": 1.0,
       "wakeupsPerSecond": 5,
-      "peakMemoryMB": 130
+      "peakMemoryMB": 150
     }
   }
 }

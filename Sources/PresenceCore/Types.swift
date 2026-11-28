@@ -24,10 +24,14 @@ public struct Observation: Codable, Sendable, Equatable {
     public var owner: Bool?
     /// Mean brightness of the frame, 0 (black) to 1, so "too dark to see you" can be told apart from "nobody there".
     public var brightness: Double?
+    /// Bluetooth signal strength of the linked phone or watch in dBm (`source == .ble` only).
+    public var rssi: Double?
+    /// The camera saw movement in front of the screen since its previous Observation.
+    public var motion: Bool?
 
     public init(
         source: SourceKind, person: Bool, distanceCm: Double? = nil, facingScreen: Bool? = nil, owner: Bool? = nil,
-        brightness: Double? = nil
+        brightness: Double? = nil, rssi: Double? = nil, motion: Bool? = nil
     ) {
         self.source = source
         self.person = person
@@ -35,6 +39,8 @@ public struct Observation: Codable, Sendable, Equatable {
         self.facingScreen = facingScreen
         self.owner = owner
         self.brightness = brightness
+        self.rssi = rssi
+        self.motion = motion
     }
 }
 
@@ -58,6 +64,8 @@ public enum Event: Codable, Sendable, Equatable {
     case micBusy(Bool)
     /// A timer tick so deadlines (grace, hold, absence) fire without new input.
     case tick
+    /// Another app is playing video or presenting (it holds a display-sleep assertion), so screens stay on.
+    case mediaPlaying(Bool)
 }
 
 /// How often a presence source samples. Off costs nothing.
@@ -97,6 +105,29 @@ public enum PresenceState: Codable, Sendable, Equatable {
     case away
     /// Screens kept on by a command. `until == nil` means until "go to sleep" or back at the desk.
     case hold(until: Double?)
+}
+
+/// Why the engine is in its current state, shown as one line in the menu.
+public enum PresenceReason: String, Codable, Sendable {
+    case turnedOff, typing, seenClose, ownerSeen, phoneNear, mediaPlaying, command, holdCommand
+    case checking, nobodySeen, phoneLeft, sleepCommand, stoppedWatching
+}
+
+/// The phone or watch chosen in Setup. Signal levels are measured there, standing at the desk and across the room.
+public struct PhoneLink: Codable, Sendable, Equatable {
+    /// CoreBluetooth peripheral identifier.
+    public var identifier: String
+    /// Shown in Settings only; never logged.
+    public var name: String
+    public var nearRssi: Double
+    public var farRssi: Double
+
+    public init(identifier: String, name: String, nearRssi: Double, farRssi: Double) {
+        self.identifier = identifier
+        self.name = name
+        self.nearRssi = nearRssi
+        self.farRssi = farRssi
+    }
 }
 
 /// What "Screen, wake up" does after waking.
@@ -150,6 +181,12 @@ public struct Settings: Codable, Sendable, Equatable {
     public var voiceAfterSeenMinutes: Double = 30
     /// The first-run Setup has been finished (or skipped) once.
     public var setupDone: Bool = false
+    /// Monitors Off: only external displays go dark and the built-in shows the Away screen, so macOS never
+    /// sleeps the displays (no password on return) and the built-in can light a face for the camera.
+    public var keepBuiltInOn: Bool = true
+    /// A video or presentation that keeps the display awake also keeps Proximity Mac from turning screens off.
+    public var respectMediaPlaying: Bool = true
+    public var phone: PhoneLink?
 
     public init() {}
 
@@ -176,6 +213,9 @@ public struct Settings: Codable, Sendable, Equatable {
         try load(.voiceNeedsMe, into: &voiceNeedsMe)
         try load(.voiceAfterSeenMinutes, into: &voiceAfterSeenMinutes)
         try load(.setupDone, into: &setupDone)
+        try load(.keepBuiltInOn, into: &keepBuiltInOn)
+        try load(.respectMediaPlaying, into: &respectMediaPlaying)
+        phone = try c.decodeIfPresent(PhoneLink.self, forKey: .phone)
     }
 }
 
@@ -184,6 +224,7 @@ extension Settings {
         case idleBeforeCheck, absenceBeforeAway, graceSeconds, recheckAfterSeen, deskRadiusCm, voiceEnabled
         case listenAfterIdle, triggerWord, lockWhenAway, wakeUpMode, wakeUpHoldMinutes, stopWatchingAfterMinutes
         case calibration, onlyWakeForMe, voiceNeedsMe, voiceAfterSeenMinutes, setupDone
+        case keepBuiltInOn, respectMediaPlaying, phone
     }
 }
 
@@ -225,6 +266,11 @@ public protocol VoiceListening: AnyObject, Sendable {
     func start()
     func stop()
     func onTranscript(_ handler: @escaping @Sendable (String) -> Void)
+}
+
+public protocol MediaReading: Sendable {
+    /// True when another app holds a display-sleep assertion (video playback, a presentation, a call).
+    func mediaPlaying() -> Bool
 }
 
 public protocol MicUsageReading: Sendable {

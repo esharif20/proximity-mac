@@ -24,6 +24,8 @@
 	<string>26.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Proximity Mac can use the signal strength of your own phone or watch to tell when you are at the desk. Nothing is sent anywhere.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Proximity Mac checks whether you are at the desk. Frames stay on this Mac and are never saved.</string>
 	<key>NSMicrophoneUsageDescription</key>
