@@ -55,6 +55,15 @@ private func unit(_ axis: Int, tilt: Float = 0, toward other: Int = 127) -> [Flo
         #expect(FaceRecognizer.signature(from: samples) == signature, "same enrolment, same signature")
     }
 
+    @Test func aStrayEnrolmentSampleDoesNotMatchOnItsOwn() throws {
+        // Another face caught in one enrolment frame must not become a signature vector.
+        let owner = (0..<14).map { unit(0, tilt: Float($0) * 0.02, toward: 1) }
+        let stray = unit(64)
+        let signature = try #require(FaceRecognizer.signature(from: owner + [stray]))
+        #expect(!FaceRecognizer.matches(stray, signature))
+        for s in owner { #expect(FaceRecognizer.matches(s, signature)) }
+    }
+
     @Test func oneTightPoseStillGivesASignature() throws {
         let samples = (0..<10).map { _ in unit(5) }
         let signature = try #require(FaceRecognizer.signature(from: samples))

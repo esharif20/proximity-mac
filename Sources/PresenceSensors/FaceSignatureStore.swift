@@ -1,10 +1,13 @@
 import Foundation
 import Security
 
-/// Keeps the Face signature as one Keychain item on this Mac only: never synced, readable only while
-/// the Mac is unlocked, and gone with one call when the Owner turns recognition off.
-/// It lives in the login keychain: the data protection keychain needs a team-signed entitlement that an
-/// ad-hoc signed build does not have (it fails with errSecMissingEntitlement).
+/// Keeps the Face signature as one item in the login keychain: never synced to iCloud, readable by other
+/// apps only through a user prompt, and gone with one call when the Owner deletes it.
+///
+/// The login keychain ignores `kSecAttrAccessible`, so "this device only" and "only while unlocked" are
+/// not enforced: a Time Machine restore or Migration Assistant can carry the item to another Mac, and it
+/// reads fine while the screen is locked. Only the data protection keychain enforces those, and it needs a
+/// team-signed entitlement that ad-hoc builds lack (errSecMissingEntitlement). See ADR 0004.
 public struct FaceSignatureStore: Sendable {
     static let defaultService = "io.github.esharif20.proximity-mac.face"
     private let service: String
@@ -32,10 +35,7 @@ public struct FaceSignatureStore: Sendable {
 
     public func save(_ signature: FaceSignature) throws {
         let data = try JSONEncoder().encode(signature)
-        let attributes: [CFString: Any] = [
-            kSecValueData: data,
-            kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-        ]
+        let attributes: [CFString: Any] = [kSecValueData: data]
         var status = SecItemUpdate(baseQuery as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
             status = SecItemAdd(baseQuery.merging(attributes) { $1 } as CFDictionary, nil)

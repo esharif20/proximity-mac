@@ -5,6 +5,7 @@ import SwiftUI
 struct SettingsView: View {
     @Bindable var coordinator: Coordinator
     @State private var opensAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var confirmingDelete = false
 
     var body: some View {
         Form {
@@ -49,6 +50,28 @@ struct SettingsView: View {
                 Toggle("Listen for commands", isOn: $coordinator.settings.voiceEnabled)
                 TextField("Trigger word", text: $coordinator.settings.triggerWord)
                     .disabled(!coordinator.settings.voiceEnabled)
+            }
+            Section("Owner") {
+                Toggle("Only wake for me", isOn: $coordinator.settings.onlyWakeForMe)
+                    .disabled(!coordinator.hasFaceSignature)
+                Toggle("Voice commands need my face", isOn: $coordinator.settings.voiceNeedsMe)
+                    .disabled(!coordinator.hasFaceSignature)
+                Text(coordinator.hasFaceSignature
+                     ? "Your face signature is saved in the Keychain on this Mac. Typing always wakes the screens."
+                     : "Enrol your face to turn these on. Only numbers are saved, never a picture.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button(coordinator.hasFaceSignature ? "Re-enrol my face" : "Enrol my face") { coordinator.openSetup() }
+                    Spacer()
+                    Button("Delete my face signature", role: .destructive) { confirmingDelete = true }
+                        .disabled(!coordinator.hasFaceSignature)
+                }
+            }
+            .confirmationDialog("Delete your face signature?", isPresented: $confirmingDelete) {
+                Button("Delete", role: .destructive) { coordinator.deleteFaceSignature() }
+            } message: {
+                Text("Only wake for me and Voice commands need my face turn off. You can enrol again later.")
             }
             Section("Feature log") {
                 Toggle("Keep a feature log (numbers only)", isOn: $coordinator.isLogging)

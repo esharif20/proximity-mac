@@ -18,10 +18,50 @@ While Proximity Mac is on, it also stops the Mac from going into idle System Sle
   - "Screen, go to sleep" means Screens Off now.
   - "Screen, keep it on for 10 minutes" holds the screens on for that long.
 
+## Setup
+
+Setup opens on first launch, and any time from the menu with "Run Setup…". It shows the camera's view with what the app sees drawn on top: face points, the distance in cm, head pose, hands and upper body. Nothing from the camera is saved.
+
+1. Allow the camera and microphone.
+2. Sit normally while it calibrates distance.
+3. Lean back, then stand behind your chair. A map of the room shows where you count as at the desk, and sets the Desk radius from it. You can adjust it with a slider.
+4. Look at each monitor, to see that you still count while looking away from the camera.
+5. Go to your bed. It should say "Not counted"; if not, Setup offers to shrink the radius.
+6. Optionally enrol your face as the Owner (see below). Skip keeps it off.
+7. Say "Screen, wake up" to test a Command.
+
+## Only wake for me
+
+Without this, anyone who comes close to the desk while you are Away turns the screens back on. If you enrol your face in Setup, you become the Owner and two switches in Settings > Owner turn on:
+
+- "Only wake for me": only your face wakes the screens from Away. Before Away, anyone close still counts, so someone else can never cause Screens Off.
+- "Voice commands need my face": a Command counts only if the camera saw your face in the last 30 minutes. If you speak while Away and haven't been seen, the camera starts watching again, so the next Command can count.
+
+Typing or moving the mouse always wakes the screens. Both switches are off until you enrol, and off by default. "Re-enrol my face" runs the enrolment again, and "Delete my face signature" removes it and turns both switches off.
+
+Face recognition uses SFace from OpenCV Zoo, run on the Mac with Core ML. It runs only when a switch is on and the camera already sees a face. A webcam has no depth sensor, so this is not Face ID: a photo of you might pass. It keeps family walking past from waking the screens. It won't stop an attacker.
+
+## The menu bar icon
+
+A small monitor shows the state at a glance:
+
+| Icon | State |
+| --- | --- |
+| Screen lit, with a dot | Present |
+| The dot pulses | Checking |
+| The screen drains | Grace countdown |
+| Outline only | Away, Screens Off |
+| A pin | Hold |
+| Sound waves beside it | Listening for a Command |
+| Struck through | Off |
+
+With Reduce Motion on, nothing pulses and changes are instant.
+
 ## Privacy
 
 - No network. The app contains no network code and sends nothing anywhere.
 - Nothing stored. Camera frames and audio stay in memory and are dropped right away. Speech is recognised on the Mac, and only the parsed Command is kept.
+- The Face signature is opt-in. Enrolling saves 128-number face embeddings (a mean and up to three pose clusters) as one item in your login Keychain, never a picture or a frame. It is never synced to iCloud, and "Delete my face signature" in Settings removes it. Because builds are ad-hoc signed, the Keychain can't mark the item as this Mac only, so a Time Machine restore or Migration Assistant can copy it to another Mac along with the rest of your login keychain.
 - The feature log is opt-in and off by default. When on, it writes timed events to `~/Library/Application Support/ProximityMac/traces/`, as numbers only: idle seconds, whether a person was seen, distance and the Command. It never holds images, sound or words. "That was wrong" in the menu adds a marker so a bad decision can be replayed.
 
 ## Install
@@ -77,4 +117,4 @@ See `docs/ARCHITECTURE.md` for how the parts fit together.
 
 ## License
 
-MIT
+MIT. The bundled SFace model (OpenCV Zoo) is Apache-2.0; see `NOTICE`. `scripts/convert-sface.sh` rebuilds it from the original ONNX file.

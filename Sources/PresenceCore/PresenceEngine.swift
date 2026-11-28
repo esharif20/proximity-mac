@@ -91,6 +91,12 @@ public struct PresenceEngine {
             }
         case .command(let command) where !acceptsCommand(at: now):
             lastIgnoredCommand = command
+            if state == .away {
+                // Someone spoke, so the camera looks again (even past the cutoff) and the Owner's face
+                // can make the next Command count.
+                awayStarted = now
+                setSampling(.watching, &out)
+            }
         case .command(.sleep):
             lastIgnoredCommand = nil
             goAway(now, &out)
