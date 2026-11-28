@@ -43,3 +43,10 @@ Proximity Mac v1 is on main: a menu-bar app that turns every screen off when you
 - GH-40 Setup window: 89cf1d4
 - GH-41 Owner wiring, Settings Owner section, README: b6604e0, ff7c0c1, 56e6385
 - Not done: the Setup window and icon were not checked by eye (screen capture is black for agents), and recognition accuracy was not measured with real faces. The active bench read 0.35% on a busy Mac for both v1 and M5, so it needs a rerun on a quiet Mac.
+
+## M6: robust detection (2026-11-28)
+- GH-46 motion-gated vision, brightness per Observation, review fix: 637ad10, 518006e
+- GH-47 body pose, body box, then hands within min(150 cm, Desk radius), review fixes: e0374d7, 4698c2d, plus the Desk radius wiring on main
+- GH-48 slowest frame rate while watching (the built-in camera stays at 15 fps), darkBrightness 0.08 untuned: 509e942
+- GH-49 the macOS lock delay in Setup and Settings, "Too dark to see you": 9c26845
+- Away bench 3.46% CPU, 141 MB: over the 130 MB memory budget, waiting on the person's decision.
