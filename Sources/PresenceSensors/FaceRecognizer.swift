@@ -169,7 +169,10 @@ public final class FaceRecognizer: Sendable {
         let samples = embeddings.filter { $0.count == embeddingLength }.map(normalised)
         guard samples.count >= minimumSamples else { return nil }
         let mean = normalised(average(samples))
-        let centroids = kMeans(samples, k: maximumCentroids)
+        // A cluster this small is a stray frame (someone else, a half-visible face), not a pose of the
+        // Owner; kept, it would match that stray on its own and bypass the threshold.
+        let minimumCluster = max(3, samples.count / 5)
+        let centroids = kMeans(samples, k: maximumCentroids, minimumCluster: minimumCluster)
         return FaceSignature(vectors: [mean] + centroids)
     }
 
@@ -196,8 +199,8 @@ public final class FaceRecognizer: Sendable {
     }
 
     /// Deterministic k-means on unit vectors: farthest-point seeding, a fixed number of rounds, and
-    /// empty clusters dropped, so the same enrolment always gives the same signature.
-    static func kMeans(_ samples: [[Float]], k: Int, rounds: Int = 10) -> [[Float]] {
+    /// clusters under `minimumCluster` samples dropped, so the same enrolment always gives the same signature.
+    static func kMeans(_ samples: [[Float]], k: Int, minimumCluster: Int = 1, rounds: Int = 10) -> [[Float]] {
         guard let first = samples.first, k > 0 else { return [] }
         var centres = [first]
         while centres.count < min(k, samples.count) {
@@ -216,7 +219,7 @@ public final class FaceRecognizer: Sendable {
             }
             centres = groups.filter { !$0.isEmpty }.map { normalised(average($0)) }
         }
-        return centres
+        return groups.filter { $0.count >= max(minimumCluster, 1) }.map { normalised(average($0)) }
     }
 
     private static func average(_ vectors: [[Float]]) -> [Float] {
