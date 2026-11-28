@@ -14,16 +14,19 @@ public final class VoiceSource: VoiceListening {
         var requestAccess: @Sendable () async -> Bool
         /// Opens the input. Setup must give up without opening it once `isCurrent()` is false (after `stop()`).
         /// `onInterrupted` fires when the input device changes and the engine has stopped itself.
+        /// `levelHandler` is read per buffer, so the level is only computed while someone listens for it.
         var open: @Sendable (
             _ isCurrent: @escaping @Sendable () -> Bool,
             _ onText: @escaping @Sendable (String) -> Void,
-            _ onInterrupted: @escaping @Sendable () -> Void
+            _ onInterrupted: @escaping @Sendable () -> Void,
+            _ levelHandler: @escaping @Sendable () -> (@Sendable (Float) -> Void)?
         ) async throws -> Close
 
         static let live = Opener(
             requestAccess: { await AVCaptureDevice.requestAccess(for: .audio) },
-            open: { isCurrent, onText, onInterrupted in
-                let session = try await VoiceSession.make(isCurrent: isCurrent, onText: onText, onInterrupted: onInterrupted)
+            open: { isCurrent, onText, onInterrupted, levelHandler in
+                let session = try await VoiceSession.make(
+                    isCurrent: isCurrent, onText: onText, onInterrupted: onInterrupted, levelHandler: levelHandler)
                 return { session.close() }
             })
     }
@@ -35,6 +38,7 @@ public final class VoiceSource: VoiceListening {
         var setup: Task<Void, Never>?
         var close: Opener.Close?
         var handler: (@Sendable (String) -> Void)?
+        var levelHandler: (@Sendable (Float) -> Void)?
     }
 
     private let state = Mutex(State())
@@ -57,6 +61,11 @@ public final class VoiceSource: VoiceListening {
 
     public func onTranscript(_ handler: @escaping @Sendable (String) -> Void) {
         state.withLock { $0.handler = handler }
+    }
+
+    /// Live input level for the Setup waveform: RMS of each audio buffer, 0...1, only while started.
+    public func onLevel(_ handler: @escaping @Sendable (Float) -> Void) {
+        state.withLock { $0.levelHandler = handler }
     }
 
     public func start() {
@@ -94,7 +103,8 @@ public final class VoiceSource: VoiceListening {
             close = try await opener.open(
                 { [weak self] in self?.isCurrent(generation) ?? false },
                 { [weak self] text in self?.deliver(text) },
-                { [weak self] in self?.restart(after: generation) })
+                { [weak self] in self?.restart(after: generation) },
+                { [weak self] in self?.levelHandler(generation) })
         } catch {
             finish(generation)
             return
@@ -110,6 +120,18 @@ public final class VoiceSource: VoiceListening {
 
     private func isCurrent(_ generation: Int) -> Bool {
         state.withLock { $0.running && $0.generation == generation }
+    }
+
+    private func levelHandler(_ generation: Int) -> (@Sendable (Float) -> Void)? {
+        state.withLock { $0.running && $0.generation == generation ? $0.levelHandler : nil }
+    }
+
+    /// Root mean square of a whole buffer, clamped to 0...1 for drawing.
+    static func level(_ samples: UnsafeBufferPointer<Float>) -> Float {
+        guard !samples.isEmpty else { return 0 }
+        var sum: Float = 0
+        for sample in samples { sum += sample * sample }
+        return min(1, (sum / Float(samples.count)).squareRoot())
     }
 
     private func finish(_ generation: Int) {
@@ -153,12 +175,15 @@ final class VoiceSession: @unchecked Sendable {
     private let results: Task<Void, Never>
     private var gate = EnergyGate<AVAudioPCMBuffer>()
     private let windowFrames: Int
+    private let levelHandler: @Sendable () -> (@Sendable (Float) -> Void)?
     private var configurationObserver: NSObjectProtocol?
 
     private init(
         engine: AVAudioEngine, converter: AVAudioConverter, outputFormat: AVAudioFormat,
-        analyzer: SpeechAnalyzer, input: AsyncStream<AnalyzerInput>.Continuation, results: Task<Void, Never>
+        analyzer: SpeechAnalyzer, input: AsyncStream<AnalyzerInput>.Continuation, results: Task<Void, Never>,
+        levelHandler: @escaping @Sendable () -> (@Sendable (Float) -> Void)?
     ) {
+        self.levelHandler = levelHandler
         self.engine = engine
         self.converter = converter
         self.outputFormat = outputFormat
@@ -171,7 +196,8 @@ final class VoiceSession: @unchecked Sendable {
     static func make(
         isCurrent: @escaping @Sendable () -> Bool,
         onText: @escaping @Sendable (String) -> Void,
-        onInterrupted: @escaping @Sendable () -> Void
+        onInterrupted: @escaping @Sendable () -> Void,
+        levelHandler: @escaping @Sendable () -> (@Sendable (Float) -> Void)?
     ) async throws -> VoiceSession {
         // Every await below can outlast a `stop()`, and the mic must never open after one.
         func checkCurrent() throws { if !isCurrent() { throw VoiceError.stopped } }
@@ -218,7 +244,7 @@ final class VoiceSession: @unchecked Sendable {
 
         let session = VoiceSession(
             engine: engine, converter: converter, outputFormat: format,
-            analyzer: analyzer, input: continuation, results: results)
+            analyzer: analyzer, input: continuation, results: results, levelHandler: levelHandler)
         guard isCurrent() else {
             session.close()
             throw VoiceError.stopped
@@ -244,6 +270,7 @@ final class VoiceSession: @unchecked Sendable {
     private func process(_ buffer: AVAudioPCMBuffer) {
         guard let channel = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return }
         let samples = UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))
+        if let onLevel = levelHandler() { onLevel(VoiceSource.level(samples)) }
         let rms = EnergyGate<AVAudioPCMBuffer>.peakWindowRMS(samples, window: windowFrames)
         let seconds = Double(buffer.frameLength) / buffer.format.sampleRate
         // The tap may reuse its buffer, so the gate keeps plain copies, never the tap's own memory. Only

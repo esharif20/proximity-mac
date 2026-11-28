@@ -162,3 +162,68 @@ import Testing
         #expect(arrivals.filter { throttle.shouldSample(at: $0) }.count == 60)
     }
 }
+
+@Suite struct CameraSourceOwnerTests {
+    static let close = Observation(source: .camera, person: true, distanceCm: 60, facingScreen: true)
+
+    /// Feeds frame answers until the check decides; returns the answer and how many frames it took.
+    static func run(_ answers: [Bool]) -> (owner: Bool?, frames: Int) {
+        var check = OwnerCheck(observation: close, started: 0)
+        for (i, match) in answers.enumerated() {
+            if let owner = check.record(match) { return (owner, i + 1) }
+        }
+        return (nil, answers.count)
+    }
+
+    @Test func threeMatchingFramesMakeTheOwner() {
+        let result = Self.run([true, true, true])
+        #expect(result.owner == true)
+        #expect(result.frames == 3)
+    }
+
+    @Test(arguments: [[false], [true, false], [true, true, false]])
+    func anyMissIsNotTheOwnerAndStopsAtOnce(answers: [Bool]) {
+        let result = Self.run(answers + [true, true, true])
+        #expect(result.owner == false)
+        #expect(result.frames == answers.count)
+    }
+
+    @Test func twoMatchesAloneDecideNothing() {
+        #expect(Self.run([true, true]).owner == nil)
+    }
+
+    @Test func onlyACloseSightingIsChecked() {
+        #expect(OwnerCheck.wanted(for: Self.close))
+        #expect(!OwnerCheck.wanted(for: Observation(source: .camera, person: false)))
+        #expect(!OwnerCheck.wanted(for: Observation(source: .camera, person: true, distanceCm: 300)))
+        #expect(!OwnerCheck.wanted(for: Observation(source: .camera, person: true)))
+    }
+
+    @Test func farFromTheCameraIsDecidedByTheSameObservationMaths() {
+        // A face 1 m off at 640 px wide is still close enough to check; the body fallback at 10 m is not.
+        let face = CameraSource.observation(
+            face: .init(widthPx: 90, yawDegrees: 0, pitchDegrees: 0), bodyWidthPx: nil, imageWidthPx: 640, calibration: nil)
+        #expect(OwnerCheck.wanted(for: face))
+        let body = CameraSource.observation(face: nil, bodyWidthPx: 20, imageWidthPx: 640, calibration: nil)
+        #expect(!OwnerCheck.wanted(for: body))
+    }
+
+    @Test func aCheckWhoseFramesStopIsDropped() {
+        let check = OwnerCheck(observation: Self.close, started: 10)
+        #expect(!check.isStale(at: 10.2))
+        #expect(check.isStale(at: 11.1))
+    }
+
+    @Test func theHeldSampleKeepsItsMeasurements() {
+        let check = OwnerCheck(observation: Self.close, started: 0)
+        #expect(check.observation == Self.close)
+        #expect(check.observation.owner == nil)
+    }
+
+    @Test func setOwnerIsSafeAtAnyTime() {
+        let camera = CameraSource()
+        camera.setOwner(FaceSignature(vectors: [[0.1, 0.2]], threshold: 0.4))
+        camera.setMode(.off)
+        camera.setOwner(nil)
+    }
+}
