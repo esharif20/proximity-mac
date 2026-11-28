@@ -23,6 +23,12 @@ public struct PresenceEngine {
     private var sleptAtDesk = false
     /// When the current Away began; watching stops `stopWatchingAfterMinutes` later (overnight, say).
     private var awayStarted: Double = 0
+    /// When the camera last recognised the Owner, in any state. Nil until it has.
+    private var ownerSeenAt: Double?
+
+    /// The latest Command dropped because the Owner was not seen recently, so the app can say why.
+    /// Cleared by the next accepted Command.
+    public private(set) var lastIgnoredCommand: Command?
 
     public init(settings: Settings) {
         self.settings = settings
@@ -45,6 +51,7 @@ public struct PresenceEngine {
                 // Facts still count while off, so enabling later starts from the real idle time.
                 if case .idle(let seconds) = event { _ = recordIdle(seconds, at: now) }
                 if case .micBusy(let busy) = event { micBusy = busy }
+                if case .observation(let o) = event { noteOwner(o, at: now) }
                 return []
             }
             // Evidence first: input or a close sighting that arrives just after a deadline still wins,
@@ -66,11 +73,15 @@ public struct PresenceEngine {
                 startChecking(now, &out)
             }
         case .observation(let o):
+            noteOwner(o, at: now)
             guard o.person && (o.distanceCm ?? 0) <= settings.deskRadiusCm else {
                 sleptAtDesk = false
                 return
             }
             if state == .away && sleptAtDesk { return }
+            // Only waking from Away is gated: before Away any close person counts, so a mismatch
+            // can never be what turns the screens off.
+            if state == .away && settings.onlyWakeForMe && o.owner != true { return }
             switch state {
             case .checking, .grace, .away, .hold(until: nil):
                 backAtDesk(now, &out)
@@ -78,21 +89,38 @@ public struct PresenceEngine {
             default:
                 break
             }
+        case .command(let command) where !acceptsCommand(at: now):
+            lastIgnoredCommand = command
         case .command(.sleep):
+            lastIgnoredCommand = nil
             goAway(now, &out)
             sleptAtDesk = true
         case .command(.wake):
+            lastIgnoredCommand = nil
             switch settings.wakeUpMode {
             case .untilSleepOrDesk: startHold(until: nil, &out)
             case .timedHold: startHold(until: now + Double(settings.wakeUpHoldMinutes) * 60, &out)
             }
         case .command(.hold(let minutes)):
+            lastIgnoredCommand = nil
             startHold(until: now + Double(minutes) * 60, &out)
         case .micBusy(let busy):
             micBusy = busy
         case .tick, .enable, .disable:
             break
         }
+    }
+
+    private mutating func noteOwner(_ o: Observation, at now: Double) {
+        if o.owner == true { ownerSeenAt = now }
+    }
+
+    /// With "Voice needs me" on, a Command counts only from someone recently recognised as the Owner,
+    /// so a voice from across the room cannot drive the screens.
+    private func acceptsCommand(at now: Double) -> Bool {
+        guard settings.voiceNeedsMe else { return true }
+        guard let seen = ownerSeenAt else { return false }
+        return now - seen <= settings.voiceAfterSeenMinutes * 60
     }
 
     /// Stores the reading and says whether it shows new input. Comparing input times rather than
