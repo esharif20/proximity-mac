@@ -102,6 +102,7 @@ final class Coordinator {
     /// sends the current reading.
     @ObservationIgnored private var mediaPlaying: Bool?
     @ObservationIgnored private var mediaCheckedAt = -Double.infinity
+    @ObservationIgnored private var micCheckedAt = -Double.infinity
     /// For the Why line, read when the menu draws rather than redrawn every second.
     @ObservationIgnored private var lastIdle = 0.0
     @ObservationIgnored private var lastSeenAt: Double?
@@ -371,7 +372,10 @@ final class Coordinator {
         pollMedia()
         // The mic only matters when the engine could ask to listen, so skip the CoreAudio query
         // while the person is typing. Only changes go to the engine, so a call starting is one event.
-        if mightListen(idle: idle) {
+        // CoreAudio's device query is the costliest thing in an idle second, and a call that starts is
+        // still caught within a few seconds, long before listening would matter.
+        if mightListen(idle: idle), clock - micCheckedAt >= Self.micPollSeconds {
+            micCheckedAt = clock
             let busy = seams.mic.micInUseByOtherApp()
             if busy != micBusy {
                 micBusy = busy
@@ -396,6 +400,7 @@ final class Coordinator {
     }
 
     static let mediaPollSeconds = 5.0
+    static let micPollSeconds = 5.0
 
     private func mightListen(idle: Double) -> Bool {
         guard settings.voiceEnabled else { return false }
