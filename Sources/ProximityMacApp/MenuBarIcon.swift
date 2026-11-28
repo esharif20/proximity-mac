@@ -5,95 +5,28 @@ import enum PresenceCore.PresenceState
 /// The menu bar glyph: a small monitor drawn in code, so it matches the menu bar in light and dark
 /// and stays crisp at any scale.
 ///
-/// The image changes only when what it shows changes. While Present nothing here runs, so the menu
-/// bar is not redrawn and the active mode stays near zero CPU. The only timers are the Checking pulse
-/// and the Grace drain, and both stop as soon as the state moves on.
+/// The image changes only when the state or the listening flag changes, and every state has a still glyph.
+/// No timer animates it: each new image re-renders the status item on every menu bar, and a 0.4 s Checking
+/// pulse alone cost about 6% CPU (docs/spikes/camera-cost.md).
 @MainActor @Observable
 final class MenuBarIcon {
     private(set) var image: NSImage
 
     @ObservationIgnored private var glyph: Glyph
-    @ObservationIgnored private var timer: Timer?
-    @ObservationIgnored private var transitionStart: Double?
-    @ObservationIgnored private var previous: Glyph?
 
     init() {
         glyph = Glyph(kind: .off, listening: false)
-        image = Self.render(glyph, blendingFrom: nil, progress: 1)
+        image = Self.render(glyph)
     }
 
-    /// Call when the state, the listening flag or the Grace length changes.
-    func show(_ state: PresenceState, listening: Bool, graceSeconds: Int) {
-        var next = Glyph(kind: Glyph.Kind(state), listening: listening)
-        if case .grace(let until) = state {
-            next.graceUntil = until
-            next.graceSeconds = Double(max(1, graceSeconds))
-        }
+    /// Call when the state, the listening flag or the Grace length changes. The Grace length no longer
+    /// changes the glyph; it stays in the call so the Coordinator is unchanged.
+    func show(_ state: PresenceState, listening: Bool, graceSeconds _: Int) {
+        let next = Glyph(kind: Glyph.Kind(state), listening: listening)
         guard next != glyph else { return }
-        let changedShape = next.kind != glyph.kind || next.listening != glyph.listening
-        previous = changedShape && !reduceMotion ? glyph : nil
-        transitionStart = previous == nil ? nil : now
         glyph = next
-        redraw()
-        schedule()
+        image = Self.render(next)
     }
-
-    private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
-    private var now: Double { ProcessInfo.processInfo.systemUptime }
-
-    private func redraw() {
-        var frame = glyph
-        let t = now
-        if glyph.kind == .checking, !reduceMotion {
-            // A slow breath: about 2.4 s per cycle, eased so it never snaps.
-            let phase = (t.truncatingRemainder(dividingBy: Self.pulsePeriod)) / Self.pulsePeriod
-            frame.pulse = 0.5 - 0.5 * cos(phase * 2 * .pi)
-        }
-        if let until = glyph.graceUntil, let total = glyph.graceSeconds {
-            frame.drain = min(1, max(0, (until - t) / total))
-        }
-        var progress = 1.0
-        if let start = transitionStart {
-            progress = min(1, (t - start) / Self.transitionDuration)
-            if progress >= 1 { transitionStart = nil; previous = nil }
-        }
-        image = Self.render(frame, blendingFrom: previous, progress: easeOut(progress))
-    }
-
-    /// Runs a timer only while something on the icon is moving, at the lowest rate that still reads
-    /// as motion at 18 pt.
-    private func schedule() {
-        timer?.invalidate()
-        timer = nil
-        let interval: Double? = if transitionStart != nil {
-            1.0 / 30
-        } else if glyph.kind == .checking, !reduceMotion {
-            Self.pulsePeriod / 6
-        } else if glyph.kind == .grace {
-            0.5
-        } else {
-            nil
-        }
-        guard let interval else { return }
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.step() }
-        }
-        timer.tolerance = interval * 0.2
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
-    }
-
-    private func step() {
-        let wasTransitioning = transitionStart != nil
-        redraw()
-        // The transition's fast timer hands over to the state's own rate once it settles.
-        if wasTransitioning, transitionStart == nil { schedule() }
-    }
-
-    private func easeOut(_ t: Double) -> Double { 1 - pow(1 - t, 3) }
-
-    static let pulsePeriod = 2.4
-    static let transitionDuration = 0.18
 }
 
 /// What the icon shows, independent of how it is drawn.
@@ -115,12 +48,6 @@ struct Glyph: Equatable {
 
     var kind: Kind
     var listening: Bool
-    var graceUntil: Double?
-    var graceSeconds: Double?
-    /// 0 to 1, the Checking dot's breath. 1 when not pulsing.
-    var pulse = 1.0
-    /// 0 to 1, how much of the Grace countdown is left.
-    var drain = 1.0
 }
 
 extension MenuBarIcon {
@@ -128,20 +55,11 @@ extension MenuBarIcon {
     static let monitorWidth: CGFloat = 18
     static let wavesWidth: CGFloat = 7
 
-    /// Draws one frame. A template image takes the menu bar's own colour; alpha gives the two tones
-    /// (outline and lit screen).
-    static func render(_ glyph: Glyph, blendingFrom old: Glyph?, progress: Double) -> NSImage {
-        let listening = glyph.listening || (old?.listening ?? false)
-        let width = monitorWidth + (listening ? wavesWidth : 0)
+    /// A template image takes the menu bar's own colour; alpha gives the two tones (outline and lit screen).
+    static func render(_ glyph: Glyph) -> NSImage {
+        let width = monitorWidth + (glyph.listening ? wavesWidth : 0)
         let image = NSImage(size: NSSize(width: width, height: height), flipped: true) { _ in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
-            if let old, progress < 1 {
-                context.saveGState()
-                context.setAlpha(1 - progress)
-                draw(old, in: context)
-                context.restoreGState()
-                context.setAlpha(progress)
-            }
             draw(glyph, in: context)
             return true
         }
@@ -165,8 +83,8 @@ extension MenuBarIcon {
         case .present, .checking, .hold:
             fill(inner, alpha: 0.35, in: context)
         case .grace:
-            // Drains from the top down, like a level falling.
-            let lit = inner.height * glyph.drain
+            // The lower half lit: the screen is on its way out. The countdown itself is on the overlay.
+            let lit = inner.height / 2
             fill(CGRect(x: inner.minX, y: inner.maxY - lit, width: inner.width, height: lit), alpha: 0.35, in: context)
         case .away, .off:
             break
@@ -187,7 +105,8 @@ extension MenuBarIcon {
         case .present:
             dot(at: centre, radius: 1.75, alpha: 1, in: context)
         case .checking:
-            dot(at: centre, radius: 1.4 + 0.45 * glyph.pulse, alpha: 0.45 + 0.55 * glyph.pulse, in: context)
+            // Smaller and dimmer than Present's dot: looking, not yet sure.
+            dot(at: centre, radius: 1.4, alpha: 0.5, in: context)
         case .hold:
             pin(at: centre, in: context)
         case .off:

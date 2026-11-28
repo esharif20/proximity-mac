@@ -157,3 +157,16 @@ performance warning. Load averages were 3.9, 5.4 and 8.4 from builds in other la
 | `main` with segmentation, Checking pulse timer removed | 4.93% | 146.0 MB, PASS |
 
 The fix belongs to the app's menu bar icon, not to the camera: no pulse, or a much slower one, while Checking.
+
+The menu bar icon (`MenuBarIcon.swift`) now has a still glyph for every state and no timers: Checking shows a smaller,
+dimmer dot, and Grace a half-lit screen (the countdown itself is on the overlay). Load averages were 6.8, 5.2 and 7.0.
+
+| `scripts/bench.sh <mode> 2` | CPU | footprint | result |
+| --------------------------- | --- | --------- | ------ |
+| checking, camera-on | 4.87% | 144.6 MB | PASS |
+| active | 0.32% (budget 0.1%, baseline 0.05%) | 19.0 MB | FAIL |
+
+Active is not the icon: a 15 s `sample` shows it idle apart from `Coordinator.tick()`, where 166 of 184 timer samples
+are `MicUsage.micInUseByOtherApp()` asking CoreAudio for input processes. The bench sends no input, so idle grows and
+`mightListen` lets the query run every second. Most of those samples wait on a CoreAudio mach message, so the CPU it
+uses is smaller than the sample count suggests. That needs its own look in the Coordinator.
