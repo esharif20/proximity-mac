@@ -131,9 +131,40 @@ public struct Settings: Codable, Sendable, Equatable {
     public var lockWhenAway: Bool = false
     public var wakeUpMode: WakeUpMode = .untilSleepOrDesk
     public var wakeUpHoldMinutes: Int = 30
+    /// Minutes into Away after which the camera stops watching (overnight); input or "wake up" still wakes.
+    public var stopWatchingAfterMinutes: Double = 15
     public var calibration: Calibration?
 
     public init() {}
+
+    /// Missing keys keep their defaults, so adding a setting never wipes a person's saved ones.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func load<T: Decodable>(_ key: CodingKeys, into value: inout T) throws {
+            if let decoded = try c.decodeIfPresent(T.self, forKey: key) { value = decoded }
+        }
+        try load(.idleBeforeCheck, into: &idleBeforeCheck)
+        try load(.absenceBeforeAway, into: &absenceBeforeAway)
+        try load(.graceSeconds, into: &graceSeconds)
+        try load(.recheckAfterSeen, into: &recheckAfterSeen)
+        try load(.deskRadiusCm, into: &deskRadiusCm)
+        try load(.voiceEnabled, into: &voiceEnabled)
+        try load(.listenAfterIdle, into: &listenAfterIdle)
+        try load(.triggerWord, into: &triggerWord)
+        try load(.lockWhenAway, into: &lockWhenAway)
+        try load(.wakeUpMode, into: &wakeUpMode)
+        try load(.wakeUpHoldMinutes, into: &wakeUpHoldMinutes)
+        try load(.stopWatchingAfterMinutes, into: &stopWatchingAfterMinutes)
+        calibration = try c.decodeIfPresent(Calibration.self, forKey: .calibration)
+    }
+}
+
+extension Settings {
+    private enum CodingKeys: String, CodingKey {
+        case idleBeforeCheck, absenceBeforeAway, graceSeconds, recheckAfterSeen, deskRadiusCm, voiceEnabled
+        case listenAfterIdle, triggerWord, lockWhenAway, wakeUpMode, wakeUpHoldMinutes, stopWatchingAfterMinutes
+        case calibration
+    }
 }
 
 /// One line of a trace file (JSONL): an event at a monotonic time.

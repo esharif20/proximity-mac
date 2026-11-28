@@ -11,3 +11,19 @@ import Testing
 @Test func defaultSettingsNeverLock() {
     #expect(Settings().lockWhenAway == false)
 }
+
+@Test func settingsSavedBeforeANewFieldKeepTheirValues() throws {
+    let old = #"{"graceSeconds": 20, "triggerWord": "monitor"}"#.data(using: .utf8)!
+    let settings = try JSONDecoder().decode(Settings.self, from: old)
+    #expect(settings.graceSeconds == 20)
+    #expect(settings.triggerWord == "monitor")
+    #expect(settings.stopWatchingAfterMinutes == 15)
+}
+
+@Test func settingsRoundTripThroughJSON() throws {
+    var settings = Settings()
+    settings.stopWatchingAfterMinutes = 5
+    settings.calibration = Calibration(faceWidthPx: 120, imageWidthPx: 640)
+    let data = try JSONEncoder().encode(settings)
+    #expect(try JSONDecoder().decode(Settings.self, from: data) == settings)
+}
