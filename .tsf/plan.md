@@ -1,7 +1,10 @@
 lane engine: GH-52 GH-53 GH-54
 lane camera: GH-55
 lane monitors: GH-56 GH-57
-lane ble: GH-58 GH-59
+lane ble: GH-58 GH-59 (retired)
+lane ddc: GH-65
+seat ddc: lane-builder (private IOKit DDC, monitors must never get stuck off)
+skills ddc: write-swift
 skills engine: write-swift tdd
 skills camera: write-swift
 skills monitors: write-swift apple-design emil-design-eng
@@ -32,6 +35,8 @@ PR flow as before: one branch and PR per lane, `lane <l> ready <sha>` to the Lea
 - camera: `Sources/PresenceSensors/CameraSource.swift`, `BodyAndHands.swift`, `MotionGate.swift`, `Sources/PresenceCore/Distance.swift`, `Tests/PresenceSensorsTests/CameraSourceTests.swift`, `MotionGateTests.swift`, `BodyAndHandsTests.swift` (or wherever those tests live now), `Tests/PresenceCoreTests/DistanceTests.swift`, `docs/spikes/camera-cost.md`, `docs/spikes/display-and-camera.md`, `scripts/bench.sh`, `bench/**`.
 - monitors: `Sources/PresenceSensors/DisplayControl.swift`, `Tests/PresenceSensorsTests/PresenceSensorsTests.swift`, `Sources/ProximityMacApp/**` except `Setup/**` and `SettingsView.swift`, `Resources/**`, `scripts/bundle.sh`.
 - ble: `Sources/PresenceSensors/BLESource.swift`, `Tests/PresenceSensorsTests/BLESourceTests.swift`, `docs/spikes/ble.md`, `Sources/ProximityMacApp/Setup/**`, `Sources/ProximityMacApp/SettingsView.swift`, `README.md`.
+- camera also owns `Sources/ProximityMacApp/MenuBarIcon.swift` (drop the Checking pulse).
+- ddc (GH-65): `Sources/PresenceSensors/DisplayControl.swift`, `Sources/PresenceSensors/DDC.swift`, DDC and display tests, `Sources/ProximityMacApp/MonitorsOff.swift`, `Coordinator.swift`, `SettingsView.swift`, `README.md`, `docs/spikes/ddc.md`. The camera lane keeps only camera files and bench.
 - Lead only: `Sources/PresenceCore/Types.swift`, `Tests/PresenceCoreTests/ContractTests.swift`, `GLOSSARY.md`, `docs/adr/**`, `docs/ARCHITECTURE.md`, `scripts/test.sh`, `Package.swift`.
 
 ## M7 contract (Types.swift, scaffold commit)

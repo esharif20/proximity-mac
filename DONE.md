@@ -50,3 +50,15 @@ Proximity Mac v1 is on main: a menu-bar app that turns every screen off when you
 - GH-48 slowest frame rate while watching (the built-in camera stays at 15 fps), darkBrightness 0.08 untuned: 509e942
 - GH-49 the macOS lock delay in Setup and Settings, "Too dark to see you": 9c26845
 - Away bench 3.46% CPU, 141 MB: over the 130 MB memory budget, waiting on the person's decision.
+
+## M7: Monitors Off, presence without a face, films, phone link, Why (2026-11-28)
+- GH-52 motion during the countdown returns to checking (at most 3 in a row with nobody seen), `reason`: 8119520, review fix in f5cbb6b
+- GH-53 a playing video or presentation keeps screens on, MediaUsage: a6bf8cf
+- GH-54 phone link fusion: f5cbb6b, review fixes f26f797
+- GH-55 person segmentation as the first pass when no face is found, Observation.motion: 183f60c to d975f06
+- GH-56 Monitors Off (external displays black, built-in on, restore on every way out), mirror-mode fix: e1561ee, a9347fb
+- GH-57 Away screen with glow, the Why line, wiring: d966073, 3d53df7
+- GH-58 BLESource: c1f5669
+- GH-59 Setup phone step, Settings for the phone, Monitors Off and films, README: ec7e6f4
+- Bench: away 4.48% CPU / 133 MB. Checking measured 10.56% / 151.5 MB on a busy Mac (main without GH-55 measured 11.57%); the cause is being profiled.
+- Not live-tested: Monitors Off on the real displays, the glow, the phone link with a real phone, recognition with a real face.
