@@ -265,7 +265,7 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
                 return (s.throttle.shouldSample(at: now), true, false, s.signature, s.brightness, false)
             }
             let pass = s.schedule.shouldRun(at: now, moved: change.any)
-            return (pass != nil, false, false, s.signature, s.brightness, Self.runsFullChain(mode: s.mode, pass: pass))
+            return (pass != nil, false, false, s.signature, s.brightness, pass == .motion)
         }
         guard take else { return }
         vision.dropIdlePoses(cameraStopped: false)
@@ -301,12 +301,6 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         finishOwnerCheck(match)
     }
 
-    /// Checking must not miss someone who is still at the desk but not facing it, so every Checking pass runs
-    /// the whole chain. Watching keeps body and hand pose to motion passes: they cost CPU and memory while Away.
-    static func runsFullChain(mode: SamplingMode, pass: VisionSchedule.Pass?) -> Bool {
-        pass == .motion || (pass != nil && mode == .checking)
-    }
-
     /// Hands an Observation to the handler with the motion seen since the previous one, and starts counting again.
     private func deliver(_ observation: Observation) {
         let (stamped, handler) = state.withLock { s in (s.motionTally.stamp(observation), s.handler) }
@@ -322,6 +316,7 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         return Self.observationWithoutFace(
             fullChain: fullChain,
             passes: .init(
+                mask: { vision.personMask(in: pixels) },
                 body: { vision.bodyJoints(in: pixels) },
                 box: { vision.widestUpperBody(in: pixels).map { $0 * imageWidth } },
                 hands: { vision.handJoints(in: pixels) }),
@@ -536,12 +531,21 @@ private final class VisionPipeline {
     private var poses: PoseRequests?
     private var poseLifetime = PoseLifetime()
 
+    /// Used on every faceless pass in both modes, so it lives as long as the camera runs.
+    private var segmentation: PersonSegmentation?
+
+    func personMask(in pixels: CVPixelBuffer) -> PersonMask? {
+        if segmentation == nil { segmentation = PersonSegmentation() }
+        return segmentation?.mask(in: pixels)
+    }
+
     func bodyJoints(in pixels: CVPixelBuffer) -> BodyJoints? { usePoses().bodyJoints(in: pixels) }
     func handJoints(in pixels: CVPixelBuffer) -> [HandJoints] { usePoses().handJoints(in: pixels) }
 
     /// Called on every Vision pass and when the camera stops, on `frameQueue` only.
     func dropIdlePoses(cameraStopped: Bool) {
         if poseLifetime.shouldDrop(at: ProcessInfo.processInfo.systemUptime, cameraStopped: cameraStopped) { poses = nil }
+        if cameraStopped { segmentation = nil }
     }
 
     private func usePoses() -> PoseRequests {

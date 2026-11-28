@@ -83,12 +83,13 @@ import Testing
     final class Calls { var log: [String] = [] }
 
     static func faceless(
-        moved: Bool = true, body: BodyJoints? = nil, box: Double? = nil, hands: [HandJoints] = [], deskRadiusCm: Double = 120,
+        moved: Bool = true, mask: PersonMask? = nil, body: BodyJoints? = nil, box: Double? = nil, hands: [HandJoints] = [], deskRadiusCm: Double = 120,
         calls: Calls = Calls()
     ) -> Observation {
         CameraSource.observationWithoutFace(
             fullChain: moved,
             passes: .init(
+                mask: { calls.log.append("mask"); return mask },
                 body: { calls.log.append("body"); return body },
                 box: { calls.log.append("box"); return box },
                 hands: { calls.log.append("hands"); return hands }),
@@ -103,14 +104,14 @@ import Testing
         let o = Self.faceless(box: 55, hands: [Self.closeHand], calls: calls)
         #expect(o.person)
         #expect(try #require(o.distanceCm) > Settings().deskRadiusCm, "the far box answers, not the hand")
-        #expect(calls.log == ["body", "box"], "hands never run once the box has answered")
+        #expect(calls.log == ["mask", "body", "box"], "hands never run once the box has answered")
     }
 
     @Test func bodyPoseAnswersFirst() {
         let calls = Calls()
         let o = Self.faceless(body: Self.headCutOff, box: 55, hands: [Self.closeHand], calls: calls)
         #expect(o.distanceCm == CameraSource.observation(body: Self.headCutOff, imageWidthPx: Self.width, calibration: nil)?.distanceCm)
-        #expect(calls.log == ["body"])
+        #expect(calls.log == ["mask", "body"])
     }
 
     @Test func aHandAnswersOnlyWhenNothingElseDoes() throws {
@@ -118,14 +119,14 @@ import Testing
         let o = Self.faceless(hands: [Self.closeHand], calls: calls)
         #expect(o.person)
         #expect(abs(try #require(o.distanceCm) - 60) < 1)
-        #expect(calls.log == ["body", "box", "hands"])
+        #expect(calls.log == ["mask", "body", "box", "hands"])
     }
 
     @Test func aStillFrameSkipsTheMotionPasses() {
         let calls = Calls()
         let o = Self.faceless(moved: false, body: Self.headCutOff, hands: [Self.closeHand], calls: calls)
         #expect(!o.person)
-        #expect(calls.log == ["box"])
+        #expect(calls.log == ["mask", "box"])
     }
 
     /// Sitting at the desk looking down at a phone: the head is bowed so the nose is hidden, the neck and
@@ -133,21 +134,48 @@ import Testing
     static let headDown = BodyJoints(
         nose: nil, neck: CGPoint(x: 320, y: 300), leftShoulder: CGPoint(x: 220, y: 320), rightShoulder: CGPoint(x: 420, y: 320))
 
-    @Test func aHeadDownBodyCountsAsCloseOnAStillCheckingPass() throws {
-        let fullChain = CameraSource.runsFullChain(mode: .checking, pass: .still)
-        let calls = Calls()
-        let o = Self.faceless(moved: fullChain, body: Self.headDown, calls: calls)
-        #expect(o.person)
-        #expect(try #require(o.distanceCm) <= Settings().deskRadiusCm, "close, so no grace countdown")
-        #expect(calls.log == ["body"])
+    /// A mask with one filled rectangle, top-down rows as a OneComponent8 buffer stores them.
+    static func mask(cols: Range<Int>, rows: Range<Int>, width: Int = 64, height: Int = 48) -> PersonMask {
+        var values = [UInt8](repeating: 0, count: width * height)
+        for r in rows { for c in cols { values[r * width + c] = 255 } }
+        return PersonMask(values: values, width: width, height: height)
     }
 
-    @Test func onlyCheckingRunsTheFullChainWithoutMotion() {
-        #expect(CameraSource.runsFullChain(mode: .checking, pass: .still))
-        #expect(CameraSource.runsFullChain(mode: .checking, pass: .motion))
-        #expect(!CameraSource.runsFullChain(mode: .watching, pass: .still), "pose stays off while Away and still")
-        #expect(CameraSource.runsFullChain(mode: .watching, pass: .motion))
-        #expect(!CameraSource.runsFullChain(mode: .checking, pass: nil))
+    @Test func maskShareAndLowestRowAreMeasured() {
+        let m = Self.mask(cols: 0..<32, rows: 24..<48)
+        #expect(m.share == 0.25)
+        #expect(m.lowest == 1)
+        #expect(Self.mask(cols: 0..<0, rows: 0..<0) == PersonMask(share: 0, lowest: nil))
+    }
+
+    @Test func aLargeBlobAtTheBottomIsCloseAndAnswersFirst() throws {
+        // Seated at the desk, head bowed over a phone: no face, a big person blob reaching the bottom edge.
+        let calls = Calls()
+        let o = Self.faceless(moved: false, mask: Self.mask(cols: 12..<52, rows: 16..<48), hands: [Self.closeHand], calls: calls)
+        #expect(o.person)
+        #expect(try #require(o.distanceCm) <= Settings().deskRadiusCm)
+        #expect(calls.log == ["mask"], "no fallback runs once the mask answers")
+    }
+
+    @Test func aSmallBlobIsFar() throws {
+        // In bed about 3 m away: a few percent of the frame.
+        let o = Self.faceless(mask: Self.mask(cols: 20..<30, rows: 30..<40), hands: [Self.closeHand])
+        #expect(o.person)
+        #expect(try #require(o.distanceCm) > Settings().deskRadiusCm, "the far mask answers, not a stray hand")
+    }
+
+    @Test func aLargeBlobAboveTheBottomIsNotSeated() throws {
+        // Standing back from the desk: big, but it ends well above the bottom of the frame.
+        let o = try #require(CameraSource.observation(mask: Self.mask(cols: 16..<48, rows: 0..<30)))
+        #expect(try #require(o.distanceCm) >= CameraSource.maxHandDistanceCm)
+    }
+
+    @Test func anEmptyMaskFallsBackToThePoses() {
+        let calls = Calls()
+        let o = Self.faceless(moved: true, mask: Self.mask(cols: 0..<0, rows: 0..<0), body: Self.headDown, calls: calls)
+        #expect(o.person)
+        #expect(calls.log == ["mask", "body"])
+        #expect(CameraSource.observation(mask: Self.mask(cols: 0..<1, rows: 47..<48)) == nil, "a sliver is noise")
     }
 
     @Test func aHandCountsOnlyInsideTheDeskRadius() {

@@ -43,6 +43,18 @@ public enum Distance {
                  imageWidthPx: imageWidthPx, calibration: calibration)
     }
 
+    /// The share of the frame a person covers at `Calibration.defaultDistanceCm` (60 cm), head and shoulders
+    /// seated at a laptop. Until Setup calibrates it, about 15% reads as 85 cm and 2% as 230 cm.
+    static let referencePersonShare = 0.30
+    static let referencePersonDistanceCm = 60.0
+
+    /// Centimetres from the screen, from the share of the frame covered by person pixels. Area falls with the
+    /// square of distance, so distance goes with the inverse square root of the share.
+    public static func estimate(personShare share: Double) -> Double {
+        guard share > 0, share.isFinite else { return .infinity }
+        return referencePersonDistanceCm * (referencePersonShare / share).squareRoot()
+    }
+
     /// The median face width over the samples, or nil when there are too few or they disagree too much.
     public static func calibration(fromFaceWidths widths: [Double], imageWidthPx: Double, distanceCm: Double) -> Calibration? {
         guard widths.count >= minCalibrationSamples, imageWidthPx > 0, distanceCm > 0,

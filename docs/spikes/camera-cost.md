@@ -90,3 +90,37 @@ with the previous grid. Vision runs at once when enough cells change (at most 4 
 
 Most of the grid's cost is locking the frame's pixel buffer, not the 4800 reads, which is why it is throttled instead
 of taken on every frame.
+
+## Person segmentation (GH-55)
+
+Presence no longer depends on the face. When no face is found, `VNGeneratePersonSegmentationRequest` (`.fast`,
+OneComponent8 mask) runs first on every pass in Checking and Watching. The share of the frame covered by person pixels
+gives the distance, `60 cm * sqrt(0.30 / share)` until Setup calibrates it: 15% reads as 85 cm, 2% as 230 cm. A mask
+whose lowest person pixel is above 80% of the frame height is not someone seated at the desk, so it reads as 150 cm
+or more. Under 0.5% is noise, and the body pose, body box and hand passes run as before. Body and hand pose stay on
+motion passes only: segmentation already sees someone still at the desk looking down at a phone.
+
+Each request alone on a 640x480 420v frame, release build, 40 runs after one warm-up:
+
+| Request | Time per pass |
+| ------- | ------------- |
+| Face rectangles rev 3 | 12.3 ms |
+| Person segmentation, `.fast` | 7.1 ms |
+| Upper body box | 12.3 ms |
+| Body pose | 10.6 ms |
+| Hand pose (2 hands) | 12.4 ms |
+
+Running body and hand pose on every Checking pass, as first planned, adds about 23 ms a second in an empty room;
+that is why they stayed on motion passes.
+
+`scripts/bench.sh <mode> 2`, with the person at the desk and moving, so motion passes ran up to 4 times a second:
+
+| Build | checking camera-on | away camera-on |
+| ----- | ------------------ | -------------- |
+| Segmentation, pose and hands on every Checking pass | 6.96% CPU, 151.5 MB, FAIL | 3.86% CPU, 134.8 MB, PASS |
+| Segmentation, pose and hands on motion passes | 8.65% CPU, 132.8 MB, FAIL | 4.48% CPU, 133.3 MB, PASS |
+| Same, segmentation switched off | 9.14% CPU, 127.6 MB, FAIL | not run |
+
+Checking is over its 5% budget with or without segmentation, and the result depends on how much the scene moves.
+Segmentation adds about 5 MB. The breach comes from motion passes at up to 4 a second while Checking, each costing at
+least the face pass, not from this change.
