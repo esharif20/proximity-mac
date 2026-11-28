@@ -39,20 +39,69 @@ extension CameraSource {
         return Observation(source: .camera, person: true, distanceCm: clamped(estimate), brightness: brightness)
     }
 
-    /// The nearest hand as a person close, or nil when no hand is near enough. `owner` stays nil: a hand
-    /// does not say whose it is, so with "Only wake for me" on the engine does not wake for it.
+    /// The nearest hand as a person close, or nil when no hand is inside the Desk radius (and the 150 cm
+    /// floor). `owner` stays nil: a hand does not say whose it is, so with "Only wake for me" on the engine
+    /// does not wake for it.
     static func observation(
-        hands: [HandJoints], imageWidthPx: Double, calibration: Calibration?, brightness: Double? = nil
+        hands: [HandJoints], imageWidthPx: Double, calibration: Calibration?, deskRadiusCm: Double = maxHandDistanceCm,
+        brightness: Double? = nil
     ) -> Observation? {
         guard let longest = hands.map(\.lengthPx).max() else { return nil }
         let estimate = Distance.estimate(handLengthPx: longest, imageWidthPx: imageWidthPx, calibration: calibration)
-        guard estimate.isFinite, estimate <= maxHandDistanceCm else { return nil }
+        guard estimate.isFinite, estimate <= min(maxHandDistanceCm, deskRadiusCm) else { return nil }
         return Observation(source: .camera, person: true, distanceCm: clamped(estimate), brightness: brightness)
+    }
+
+    /// The passes tried when no face is found, run lazily so a pass that answers saves the rest.
+    struct FacelessPasses {
+        var body: () -> BodyJoints?
+        /// The widest upper-body box, in pixels.
+        var box: () -> Double?
+        var hands: () -> [HandJoints]
+    }
+
+    /// Body pose first, since it sees a torso with the head above the frame; then the upper-body box; hands
+    /// last, so a person already seen far away is never turned into a close one by a stray hand. Body and
+    /// hand pose run on motion frames only: someone who just stood up or waved has moved, and an empty still
+    /// room then costs only the face and box passes.
+    static func observationWithoutFace(
+        moved: Bool, passes: FacelessPasses, imageWidthPx: Double, calibration: Calibration?, deskRadiusCm: Double,
+        brightness: Double?
+    ) -> Observation {
+        if moved, let body = passes.body(),
+           let seen = observation(body: body, imageWidthPx: imageWidthPx, calibration: calibration, brightness: brightness) {
+            return seen
+        }
+        if let box = passes.box() {
+            return observation(face: nil, bodyWidthPx: box, imageWidthPx: imageWidthPx, calibration: calibration, brightness: brightness)
+        }
+        if moved, let hand = observation(
+            hands: passes.hands(), imageWidthPx: imageWidthPx, calibration: calibration, deskRadiusCm: deskRadiusCm,
+            brightness: brightness) {
+            return hand
+        }
+        return Observation(source: .camera, person: false, brightness: brightness)
     }
 
     /// Finite and never negative, so traces still encode.
     static func clamped(_ estimate: Double) -> Double {
         estimate.isFinite ? min(max(estimate, 0), farCm) : farCm
+    }
+}
+
+/// When the pose requests may be dropped: after `idleSeconds` without use, or as soon as the camera stops.
+struct PoseLifetime {
+    static let idleSeconds = 30.0
+    private var usedAt: Double?
+
+    mutating func used(at now: Double) {
+        usedAt = now
+    }
+
+    mutating func shouldDrop(at now: Double, cameraStopped: Bool) -> Bool {
+        guard let usedAt, cameraStopped || now - usedAt > Self.idleSeconds else { return false }
+        self.usedAt = nil
+        return true
     }
 }
 

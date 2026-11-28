@@ -23,6 +23,7 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         var brightness: Double?
         var handler: (@Sendable (Observation) -> Void)?
         var calibration: Calibration?
+        var deskRadiusCm = Settings().deskRadiusCm
         /// Face widths collected while `calibrate()` runs; nil otherwise.
         var calibrationWidths: [Double]?
         /// When calibration saw its first frame, so its 3 s window excludes camera warm-up.
@@ -51,6 +52,12 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
     public var calibration: Calibration? {
         get { state.withLock { $0.calibration } }
         set { state.withLock { $0.calibration = newValue } }
+    }
+
+    /// The person's Desk radius, set by the Coordinator from Settings: a hand counts only inside it.
+    public var deskRadiusCm: Double {
+        get { state.withLock { $0.deskRadiusCm } }
+        set { state.withLock { $0.deskRadiusCm = newValue } }
     }
 
     public func onObservation(_ handler: @escaping @Sendable (Observation) -> Void) {
@@ -134,6 +141,7 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
                 // Stopping and dropping the session powers the camera down, so the light goes off.
                 session.stopRunning()
                 self.session = nil
+                frameQueue.async { [self] in vision.dropIdlePoses(cameraStopped: true) }
             }
         }
     }
@@ -257,7 +265,7 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
             return (pass != nil, false, false, s.signature, s.brightness, pass == .motion)
         }
         guard take else { return }
-        vision.dropIdlePoses()
+        vision.dropIdlePoses(cameraStopped: false)
         let imageWidth = Double(CVPixelBufferGetWidth(pixels))
 
         if continuing, let signature {
@@ -270,8 +278,8 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
 
         guard let face = vision.largestFace(in: pixels, imageWidth: imageWidth) else {
             if calibrating { return }
-            let (handler, calibration) = state.withLock { ($0.handler, $0.calibration) }
-            handler?(withoutFace(pixels, moved: moved, calibration: calibration, brightness: brightness))
+            let (handler, calibration, desk) = state.withLock { ($0.handler, $0.calibration, $0.deskRadiusCm) }
+            handler?(withoutFace(pixels, moved: moved, calibration: calibration, deskRadiusCm: desk, brightness: brightness))
             return
         }
         if calibrating {
@@ -291,24 +299,18 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
     }
 
     /// Bodies and hands only when there is no face: a face already answers "person" and gives a better distance.
-    /// On motion frames only, body pose first, since it sees a torso with the head above the frame, then
-    /// hands, since a hand that counts is a wave. Someone who just stood up or waved has moved, and an empty
-    /// still room then costs only the face and upper-body passes. The upper-body box comes last.
     private func withoutFace(
-        _ pixels: CVPixelBuffer, moved: Bool, calibration: Calibration?, brightness: Double?
+        _ pixels: CVPixelBuffer, moved: Bool, calibration: Calibration?, deskRadiusCm: Double, brightness: Double?
     ) -> Observation {
         let imageWidth = Double(CVPixelBufferGetWidth(pixels))
-        if moved, let body = vision.bodyJoints(in: pixels),
-           let observation = Self.observation(body: body, imageWidthPx: imageWidth, calibration: calibration, brightness: brightness) {
-            return observation
-        }
-        if moved, let observation = Self.observation(
-            hands: vision.handJoints(in: pixels), imageWidthPx: imageWidth, calibration: calibration, brightness: brightness) {
-            return observation
-        }
-        let bodyWidth = vision.widestUpperBody(in: pixels).map { $0 * imageWidth }
-        return Self.observation(
-            face: nil, bodyWidthPx: bodyWidth, imageWidthPx: imageWidth, calibration: calibration, brightness: brightness)
+        let vision = vision
+        return Self.observationWithoutFace(
+            moved: moved,
+            passes: .init(
+                body: { vision.bodyJoints(in: pixels) },
+                box: { vision.widestUpperBody(in: pixels).map { $0 * imageWidth } },
+                hands: { vision.handJoints(in: pixels) }),
+            imageWidthPx: imageWidth, calibration: calibration, deskRadiusCm: deskRadiusCm, brightness: brightness)
     }
 
     /// Records one frame's answer and delivers the held sample once the check has decided.
@@ -514,22 +516,21 @@ private final class VisionPipeline {
         return request
     }()
 
-    /// Built on first use and dropped after `poseIdleSeconds` without use, so a camera that always finds a
-    /// face, or a still empty room, does not keep the pose requests and their own handler around.
+    /// Built on first use and dropped after 30 s without use or when the camera stops, so a camera that
+    /// always finds a face, or a still empty room, does not keep the pose requests and their handler around.
     private var poses: PoseRequests?
-    private var posesUsedAt = 0.0
-    static let poseIdleSeconds = 30.0
+    private var poseLifetime = PoseLifetime()
 
     func bodyJoints(in pixels: CVPixelBuffer) -> BodyJoints? { usePoses().bodyJoints(in: pixels) }
     func handJoints(in pixels: CVPixelBuffer) -> [HandJoints] { usePoses().handJoints(in: pixels) }
 
-    /// Called on every Vision pass.
-    func dropIdlePoses() {
-        if poses != nil, ProcessInfo.processInfo.systemUptime - posesUsedAt > Self.poseIdleSeconds { poses = nil }
+    /// Called on every Vision pass and when the camera stops, on `frameQueue` only.
+    func dropIdlePoses(cameraStopped: Bool) {
+        if poseLifetime.shouldDrop(at: ProcessInfo.processInfo.systemUptime, cameraStopped: cameraStopped) { poses = nil }
     }
 
     private func usePoses() -> PoseRequests {
-        posesUsedAt = ProcessInfo.processInfo.systemUptime
+        poseLifetime.used(at: ProcessInfo.processInfo.systemUptime)
         if let poses { return poses }
         let made = PoseRequests()
         poses = made
