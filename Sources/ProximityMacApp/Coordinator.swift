@@ -32,6 +32,8 @@ final class Coordinator {
     /// The last Command recognised, shown in the menu. The transcript itself is never kept.
     private(set) var lastCommand: Command?
     let bench: BenchMode?
+    /// The menu bar glyph. It redraws itself only when what it shows changes.
+    @ObservationIgnored let icon = MenuBarIcon()
 
     var settings: Settings {
         didSet {
@@ -117,6 +119,7 @@ final class Coordinator {
             state = bench.state
             keepAwake.set(true)
             bench.effects.forEach(perform)
+            refreshIcon()
         } else if bench == .reading || store.enabled {
             send(.enable)
         }
@@ -130,6 +133,7 @@ final class Coordinator {
         if engine.state != state {
             state = engine.state
             keepAwake.set(state != .off)
+            refreshIcon()
         }
         effects.forEach(perform)
         if showsCountdown || graceUntil != nil { now = clock }
@@ -154,6 +158,10 @@ final class Coordinator {
         if let calibration = await seams.camera.calibrate() {
             settings.calibration = calibration
         }
+    }
+
+    private func refreshIcon() {
+        icon.show(state, listening: listening, graceSeconds: settings.graceSeconds)
     }
 
     private func heard(_ transcript: String) {
@@ -218,6 +226,7 @@ final class Coordinator {
         case .listen(let on):
             guard on != listening else { return }
             listening = on
+            refreshIcon()
             on ? seams.voice.start() : seams.voice.stop()
         case .showGrace(let seconds):
             now = clock

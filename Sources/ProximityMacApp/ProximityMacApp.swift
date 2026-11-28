@@ -11,7 +11,8 @@ struct ProximityMacApp: App {
         MenuBarExtra {
             MenuContent(coordinator: coordinator)
         } label: {
-            Image(systemName: coordinator.listening ? "waveform.circle.fill" : StatusText.symbol(coordinator.state))
+            // Reads only the icon's image, so the per-second countdown clock never redraws the menu bar.
+            Image(nsImage: coordinator.icon.image)
                 .accessibilityLabel("Proximity Mac")
         }
 
