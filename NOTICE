@@ -1,0 +1,13 @@
+Proximity Mac
+
+This product includes the SFace face recognition model from OpenCV Zoo
+(https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface),
+"SFace: Sigmoid-Constrained Hypersphere Loss for Robust Face Recognition",
+Yaoyao Zhong, Weihong Deng et al. Copyright the original authors.
+
+It is licensed under the Apache License, Version 2.0:
+https://www.apache.org/licenses/LICENSE-2.0
+
+Sources/PresenceSensors/Resources/SFace.mlmodelc is a Core ML conversion of
+face_recognition_sface_2021dec.onnx with fp16 weights, made by
+scripts/convert-sface.sh. The weights are otherwise unmodified.

@@ -1,5 +1,5 @@
-lane recognition: GH-34 GH-35 GH-36
-lane vision: GH-37 GH-38
+lane recognition: GH-34 GH-35 GH-41(Settings + README part)
+lane vision: GH-37 GH-38 GH-36
 lane app: GH-39 GH-40 GH-41
 skills recognition: write-swift tdd
 skills vision: write-swift
@@ -18,7 +18,7 @@ Each lane is one branch and one PR: after the first green commit `git push -u or
 ## Issues, verify command
 - GH-34 (recognition) Engine owner gating, voice needs me. `scripts/test.sh --filter PresenceEngine`
 - GH-35 (recognition) SFace Core ML model, FaceRecognizer, FaceSignatureStore. `scripts/test.sh --filter FaceRecognizer`
-- GH-36 (recognition) CameraSource fills Observation.owner (3-frame match). `scripts/test.sh --filter CameraSource`
+- GH-36 (vision) CameraSource fills Observation.owner (3-frame match). `scripts/test.sh --filter CameraSource`
 - GH-37 (vision) VisionLab live analysis, calibrate, enrolOwner. `scripts/test.sh --filter VisionLab`
 - GH-38 (vision) VoiceSource.onLevel. `scripts/test.sh --filter Voice`
 - GH-39 (app) Menu-bar icon. `swift build && scripts/bench.sh active 1`
@@ -26,14 +26,15 @@ Each lane is one branch and one PR: after the first green commit `git push -u or
 - GH-41 (app) Owner wiring, Settings, README. `swift build && scripts/bundle.sh`
 
 ## Files each lane owns
-- recognition: `Sources/PresenceCore/PresenceEngine.swift`, `Tests/PresenceCoreTests/PresenceEngineTests.swift`, `Sources/PresenceSensors/FaceRecognizer.swift`, `Sources/PresenceSensors/FaceSignatureStore.swift`, `Sources/PresenceSensors/CameraSource.swift`, `Sources/PresenceSensors/Resources/**`, `Tests/PresenceSensorsTests/FaceRecognizerTests.swift`, `Tests/PresenceSensorsTests/CameraSourceTests.swift`, `scripts/convert-sface.sh`, `NOTICE`, `docs/spikes/camera-cost.md`, `Package.swift` (the PresenceSensors resources line only).
-- vision: `Sources/PresenceSensors/VisionLab.swift`, `Tests/PresenceSensorsTests/VisionLabTests.swift`, `Sources/PresenceSensors/VoiceSource.swift`, `Tests/PresenceSensorsTests/VoiceTests.swift`.
-- app: `Sources/ProximityMacApp/**`, `docs/design/**`, `README.md`, `Resources/**`, `scripts/bundle.sh`.
+- recognition: `Sources/PresenceCore/PresenceEngine.swift`, `Tests/PresenceCoreTests/PresenceEngineTests.swift`, `Sources/PresenceSensors/FaceRecognizer.swift`, `Sources/PresenceSensors/FaceSignatureStore.swift`, `Sources/PresenceSensors/Resources/**`, `Tests/PresenceSensorsTests/FaceRecognizerTests.swift`, `scripts/convert-sface.sh`, `NOTICE`, `Package.swift` (the PresenceSensors resources line only), and for GH-41: `Sources/ProximityMacApp/SettingsView.swift`, `README.md`.
+- vision: `Sources/PresenceSensors/CameraSource.swift`, `Tests/PresenceSensorsTests/CameraSourceTests.swift`, `docs/spikes/camera-cost.md` (GH-36, moved from recognition), `Sources/PresenceSensors/VisionLab.swift`, `Tests/PresenceSensorsTests/VisionLabTests.swift`, `Sources/PresenceSensors/VoiceSource.swift`, `Tests/PresenceSensorsTests/VoiceTests.swift`.
+- app: `Sources/ProximityMacApp/**` except SettingsView.swift, `docs/design/**`, `Resources/**`, `scripts/bundle.sh`.
 - Lead only: `Sources/PresenceCore/Types.swift`, `Tests/PresenceCoreTests/ContractTests.swift`, `GLOSSARY.md`, `docs/adr/**`, `docs/ARCHITECTURE.md`, `scripts/test.sh`. Need a change there? `hc send` the Lead the exact line.
 
 ## Cross-lane dependencies (build against the contract, `git merge main` once it lands)
 - vision GH-37 `enrolOwner` calls `FaceRecognizer.embedding` / `.signature` (GH-35): stub behind the same signatures until it lands.
 - app GH-40 uses `VisionLab`, `LabFrame`, `VoiceSource.onLevel`: drive the UI from a fake frame source until vision lands.
+- GH-41 split: the app lane adds to Coordinator `var hasFaceSignature: Bool { get }`, `func deleteFaceSignature()` (deletes, turns both switches off), `func openSetup()` and the owner wiring (`camera.setOwner`); the recognition lane builds the SettingsView Owner section and README against those names.
 - app GH-41 uses `FaceSignatureStore`, `CameraSource.setOwner`, `PresenceEngine.lastIgnoredCommand` (recognition).
 
 ## Shared contract
