@@ -21,6 +21,8 @@ struct SettingsView: View {
                         value: $coordinator.settings.graceSeconds, in: 3...60)
                 Stepper("Desk radius \(Int(coordinator.settings.deskRadiusCm)) cm",
                         value: $coordinator.settings.deskRadiusCm, in: 40...300, step: 10)
+                Stepper("Stop watching after \(Int(coordinator.settings.stopWatchingAfterMinutes)) min away",
+                        value: $coordinator.settings.stopWatchingAfterMinutes, in: 5...240, step: 5)
                 Toggle("Lock when away", isOn: $coordinator.settings.lockWhenAway)
             }
             Section("Distance") {
