@@ -3,6 +3,8 @@ import Foundation
 /// Decides every Screens Off. Pure: events and times in, effects out, so traces replay exactly.
 public struct PresenceEngine {
     public private(set) var state: PresenceState = .off
+    /// Why the engine is in `state`, for the one-line explanation in the menu.
+    public private(set) var reason: PresenceReason = .turnedOff
     private var settings: Settings
 
     // What the outside world is currently doing, so each effect is emitted only when it changes.
@@ -25,6 +27,10 @@ public struct PresenceEngine {
     private var awayStarted: Double = 0
     /// When the camera last recognised the Owner, in any state. Nil until it has.
     private var ownerSeenAt: Double?
+    /// Graces undone by camera motion since the person was last seen or typed. Capped so a fan or a
+    /// curtain cannot keep the monitors on forever.
+    private var motionReturns = 0
+    static let maxMotionReturns = 3
 
     /// The latest Command dropped because the Owner was not seen recently, so the app can say why.
     /// Cleared by the next accepted Command.
@@ -42,7 +48,10 @@ public struct PresenceEngine {
         var out: [Effect] = []
         switch event {
         case .enable:
-            if state == .off { state = .present }
+            if state == .off {
+                state = .present
+                reason = .typing
+            }
         case .disable:
             disable(&out)
             return out
@@ -68,7 +77,10 @@ public struct PresenceEngine {
     private mutating func react(to event: Event, at now: Double, _ out: inout [Effect]) {
         switch event {
         case .idle(let seconds):
-            if recordIdle(seconds, at: now) { userIsBack(now, &out) }
+            if recordIdle(seconds, at: now) {
+                motionReturns = 0
+                userIsBack(now, &out)
+            }
             if state == .present, seconds >= settings.idleBeforeCheck, now >= recheckNotBefore {
                 startChecking(now, &out)
             }
@@ -76,15 +88,22 @@ public struct PresenceEngine {
             noteOwner(o, at: now)
             guard o.person && (o.distanceCm ?? 0) <= settings.deskRadiusCm else {
                 sleptAtDesk = false
+                // Someone looking down at a phone often shows no face, but they still move.
+                if case .grace = state, o.motion == true, motionReturns < Self.maxMotionReturns {
+                    motionReturns += 1
+                    setGrace(false, &out)
+                    startChecking(now, &out)
+                }
                 return
             }
+            motionReturns = 0
             if state == .away && sleptAtDesk { return }
             // Only waking from Away is gated: before Away any close person counts, so a mismatch
             // can never be what turns the screens off.
             if state == .away && settings.onlyWakeForMe && o.owner != true { return }
             switch state {
             case .checking, .grace, .away, .hold(until: nil):
-                backAtDesk(now, &out)
+                backAtDesk(now, o.owner == true ? .ownerSeen : .seenClose, &out)
                 recheckNotBefore = now + settings.recheckAfterSeen
             default:
                 break
@@ -99,17 +118,17 @@ public struct PresenceEngine {
             }
         case .command(.sleep):
             lastIgnoredCommand = nil
-            goAway(now, &out)
+            goAway(now, .sleepCommand, &out)
             sleptAtDesk = true
         case .command(.wake):
             lastIgnoredCommand = nil
             switch settings.wakeUpMode {
-            case .untilSleepOrDesk: startHold(until: nil, &out)
-            case .timedHold: startHold(until: now + Double(settings.wakeUpHoldMinutes) * 60, &out)
+            case .untilSleepOrDesk: startHold(until: nil, .command, &out)
+            case .timedHold: startHold(until: now + Double(settings.wakeUpHoldMinutes) * 60, .command, &out)
             }
         case .command(.hold(let minutes)):
             lastIgnoredCommand = nil
-            startHold(until: now + Double(minutes) * 60, &out)
+            startHold(until: now + Double(minutes) * 60, .holdCommand, &out)
         case .micBusy(let busy):
             micBusy = busy
         case .tick, .enable, .disable, .mediaPlaying:
@@ -144,14 +163,15 @@ public struct PresenceEngine {
         recheckNotBefore = -.infinity
         switch state {
         case .checking, .grace, .away, .hold(until: nil):
-            backAtDesk(now, &out)
+            backAtDesk(now, .typing, &out)
         default:
             break
         }
     }
 
-    private mutating func backAtDesk(_ now: Double, _ out: inout [Effect]) {
+    private mutating func backAtDesk(_ now: Double, _ why: PresenceReason, _ out: inout [Effect]) {
         state = .present
+        reason = why
         setGrace(false, &out)
         setScreensDark(false, &out)
         setSampling(.off, &out)
@@ -159,15 +179,17 @@ public struct PresenceEngine {
 
     private mutating func startChecking(_ now: Double, _ out: inout [Effect]) {
         state = .checking
+        reason = .checking
         checkStarted = now
         setSampling(.checking, &out)
     }
 
-    private mutating func goAway(_ now: Double, _ out: inout [Effect]) {
+    private mutating func goAway(_ now: Double, _ why: PresenceReason, _ out: inout [Effect]) {
         // "Go to sleep" said while already Away must not restart the timer and turn watching back on.
         if state == .away { return }
         awayStarted = now
         state = .away
+        reason = why
         sleptAtDesk = false
         setGrace(false, &out)
         if !screensDark {
@@ -178,8 +200,9 @@ public struct PresenceEngine {
         setSampling(.watching, &out)
     }
 
-    private mutating func startHold(until deadline: Double?, _ out: inout [Effect]) {
+    private mutating func startHold(until deadline: Double?, _ why: PresenceReason, _ out: inout [Effect]) {
         state = .hold(until: deadline)
+        reason = why
         setGrace(false, &out)
         setScreensDark(false, &out)
         // An open-ended hold ends when the person is seen back at the desk, so the camera keeps watching.
@@ -190,15 +213,17 @@ public struct PresenceEngine {
         switch state {
         case .checking where now - checkStarted >= settings.absenceBeforeAway:
             state = .grace(until: now + Double(settings.graceSeconds))
+            reason = .nobodySeen
             setGrace(true, &out)
         case .grace(let until) where now >= until:
-            goAway(now, &out)
+            goAway(now, reason, &out)
         case .away where now - awayStarted >= settings.stopWatchingAfterMinutes * 60:
             // Long gone: stop paying for the camera. Input, "wake up" and "keep it on" still wake.
+            if sampling != .off { reason = .stoppedWatching }
             setSampling(.off, &out)
         case .hold(let until?) where now >= until:
             // Someone typing when the hold runs out is at the desk; checking now would time absence too early.
-            if lastIdle < settings.idleBeforeCheck { backAtDesk(now, &out) } else { startChecking(now, &out) }
+            if lastIdle < settings.idleBeforeCheck { backAtDesk(now, .typing, &out) } else { startChecking(now, &out) }
         default:
             break
         }
@@ -206,6 +231,8 @@ public struct PresenceEngine {
 
     private mutating func disable(_ out: inout [Effect]) {
         state = .off
+        reason = .turnedOff
+        motionReturns = 0
         setSampling(.off, &out)
         setListening(false, &out)
         setGrace(false, &out)

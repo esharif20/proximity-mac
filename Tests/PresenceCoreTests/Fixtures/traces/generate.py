@@ -4,9 +4,10 @@
 import json, random, sys, os
 out = sys.argv[1]
 
-def obs(person, d=None):
+def obs(person, d=None, motion=None):
     o = {"source": "camera", "person": person}
     if d is not None: o["distanceCm"] = round(d, 1)
+    if motion is not None: o["motion"] = motion
     return {"observation": {"_0": o}}
 
 def write(name, lines, truth):
@@ -52,3 +53,8 @@ run("coming_back", 300, every(0, 15, 5) | {203, 210},
 run("voice_hold_from_bed", 700, every(0, 10, 3),
     lambda t, r: obs(True, 60) if t < 10 else obs(True, r.gauss(350, 20)) if r.random() < 0.3 else obs(False),
     [(0, True), (10, False)], extra=[(150, {"command": {"_0": {"hold": {"minutes": 5}}}})])
+# Looking down at a phone at the desk: no face, the hands move every few seconds, and the body box is
+# caught now and then. Must never reach Screens Off.
+run("phone_at_desk", 330, {0, 5},
+    lambda t, r: obs(True, r.gauss(75, 5)) if int(t) % 150 == 140
+    else obs(False, motion=True) if int(t) % 3 == 0 else obs(False), [(0, True)])

@@ -691,3 +691,132 @@ private func closeFace(owner: Bool?) -> Event {
         #expect(checked > 1000, "the random runs must actually see faces while Away: \(checked)")
     }
 }
+
+private let motion = Event.observation(Observation(source: .camera, person: false, motion: true))
+
+@Suite struct PresenceEngineMotionTests {
+    @Test func motionDuringGraceChecksAgainWithAFreshTimer() {
+        var d = Driver()
+        d.toGrace()
+        #expect(d.at(62, motion) == [.hideGrace])
+        #expect(d.state == .checking)
+        #expect(d.engine.reason == .checking)
+        #expect(d.at(91, nobody) == [])
+        #expect(d.at(92, .tick) == [.showGrace(seconds: 10)])
+    }
+
+    @Test func motionWhileCheckingDoesNotRestartTheTimer() {
+        var d = Driver()
+        d.toChecking()
+        d.at(50, motion)
+        #expect(d.at(60, .tick) == [.showGrace(seconds: 10)])
+    }
+
+    @Test func theFourthGraceRunsOutDespiteMotion() {
+        var d = Driver()
+        d.toChecking()
+        var off: Double?
+        for t in stride(from: 32.0, through: 400, by: 2) where off == nil {
+            if d.at(t, motion).contains(.screensOff) { off = t }
+        }
+        // Graces at 60, 92, 124 are undone at 62, 94, 126; the one at 156 runs out at 166.
+        #expect(off == 166)
+        #expect(d.state == .away)
+    }
+
+    @Test func aCloseSightingResetsTheMotionCount() {
+        var d = Driver()
+        d.toChecking()
+        var t = 32.0
+        func run(until end: Double) -> Bool {
+            var wentOff = false
+            while t <= end {
+                if d.at(t, motion).contains(.screensOff) { wentOff = true }
+                t += 2
+            }
+            return wentOff
+        }
+        #expect(!run(until: 150))
+        d.at(151, close)
+        #expect(d.state == .present)
+        // Rests 60 s, checks 30 s, then three more graces can be undone.
+        d.at(211, .idle(seconds: 211))
+        #expect(d.state == .checking)
+        t = 212
+        #expect(!run(until: 330))
+    }
+
+    @Test func inputResetsTheMotionCount() {
+        var d = Driver()
+        d.toChecking()
+        for t in stride(from: 32.0, through: 150, by: 2) { d.at(t, motion) }
+        d.at(151, .idle(seconds: 0))
+        #expect(d.state == .present)
+        d.at(181, .idle(seconds: 30))
+        #expect(d.state == .checking)
+        var wentOff = false
+        for t in stride(from: 182.0, through: 300, by: 2) where d.at(t, motion).contains(.screensOff) { wentOff = true }
+        #expect(!wentOff)
+    }
+
+    @Test func motionWhileAwayDoesNotWake() {
+        var d = Driver()
+        d.toAway()
+        #expect(d.at(72, motion) == [])
+        #expect(d.state == .away)
+    }
+}
+
+@Suite struct PresenceEngineReasonTests {
+    @Test func reasonFollowsEachTransition() {
+        var d = Driver(enabled: false)
+        #expect(d.engine.reason == .turnedOff)
+        d.at(0, .enable)
+        #expect(d.engine.reason == .typing)
+        d.toChecking()
+        #expect(d.engine.reason == .checking)
+        d.at(60, nobody)
+        #expect(d.engine.reason == .nobodySeen)
+        d.at(70, .tick)
+        #expect(d.engine.reason == .nobodySeen)
+        d.at(71, close)
+        #expect(d.engine.reason == .seenClose)
+        d.at(72, .command(.sleep))
+        #expect(d.engine.reason == .sleepCommand)
+        d.at(73, .command(.wake))
+        #expect(d.engine.reason == .command)
+        d.at(74, .command(.hold(minutes: 5)))
+        #expect(d.engine.reason == .holdCommand)
+        d.at(75, .idle(seconds: 0))
+        #expect(d.engine.reason == .holdCommand)
+        d.at(76, .disable)
+        #expect(d.engine.reason == .turnedOff)
+    }
+
+    @Test func reasonNamesTheOwnerAndTyping() {
+        var d = Driver()
+        d.toAway()
+        d.at(71, .observation(Observation(source: .camera, person: true, distanceCm: 60, owner: true)))
+        #expect(d.engine.reason == .ownerSeen)
+        d.at(200, .idle(seconds: 100))
+        d.at(230, nobody)
+        d.at(231, .idle(seconds: 0))
+        #expect(d.engine.reason == .typing)
+    }
+
+    @Test func reasonSaysWhenWatchingStopped() {
+        var d = Driver()
+        d.toAway()
+        d.at(70 + 15 * 60, .tick)
+        #expect(d.engine.reason == .stoppedWatching)
+    }
+
+    @Test func aTimedHoldEndingWhileIdleChecks() {
+        var d = Driver()
+        d.at(10, .idle(seconds: 40))
+        d.at(11, .command(.hold(minutes: 1)))
+        d.at(71, .idle(seconds: 101))
+        #expect(d.state == .checking)
+        #expect(d.engine.reason == .checking)
+    }
+}
