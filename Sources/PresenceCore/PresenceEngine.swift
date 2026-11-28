@@ -17,6 +17,7 @@ public struct PresenceEngine {
     /// When the last keyboard or mouse input happened, from the latest idle reading.
     private var lastInputAt: Double?
     private var micBusy = false
+    private var mediaPlaying = false
     /// When the current check started; a check that finds nobody close for `absenceBeforeAway` leads to grace.
     private var checkStarted: Double = 0
     /// After a close sighting the camera rests until this time.
@@ -60,6 +61,7 @@ public struct PresenceEngine {
                 // Facts still count while off, so enabling later starts from the real idle time.
                 if case .idle(let seconds) = event { _ = recordIdle(seconds, at: now) }
                 if case .micBusy(let busy) = event { micBusy = busy }
+                if case .mediaPlaying(let playing) = event { mediaPlaying = playing }
                 if case .observation(let o) = event { noteOwner(o, at: now) }
                 return []
             }
@@ -82,7 +84,7 @@ public struct PresenceEngine {
                 userIsBack(now, &out)
             }
             if state == .present, seconds >= settings.idleBeforeCheck, now >= recheckNotBefore {
-                startChecking(now, &out)
+                if mediaKeepsOn { reason = .mediaPlaying } else { startChecking(now, &out) }
             }
         case .observation(let o):
             noteOwner(o, at: now)
@@ -131,7 +133,11 @@ public struct PresenceEngine {
             startHold(until: now + Double(minutes) * 60, .holdCommand, &out)
         case .micBusy(let busy):
             micBusy = busy
-        case .tick, .enable, .disable, .mediaPlaying:
+        case .mediaPlaying(let playing):
+            // `advanceDeadlines` ends a running check or grace; Away is left alone so a video that
+            // autoplays in the dark never lights the room.
+            mediaPlaying = playing
+        case .tick, .enable, .disable:
             break
         }
     }
@@ -209,7 +215,19 @@ public struct PresenceEngine {
         setSampling(deadline == nil ? .watching : .off, &out)
     }
 
+    /// A video or presentation is on screen and the person asked for that to keep the screens on.
+    private var mediaKeepsOn: Bool { mediaPlaying && settings.respectMediaPlaying }
+
     private mutating func advanceDeadlines(_ now: Double, _ out: inout [Effect]) {
+        if mediaKeepsOn {
+            switch state {
+            case .checking, .grace:
+                backAtDesk(now, .mediaPlaying, &out)
+                return
+            default:
+                break
+            }
+        }
         switch state {
         case .checking where now - checkStarted >= settings.absenceBeforeAway:
             state = .grace(until: now + Double(settings.graceSeconds))
@@ -223,7 +241,13 @@ public struct PresenceEngine {
             setSampling(.off, &out)
         case .hold(let until?) where now >= until:
             // Someone typing when the hold runs out is at the desk; checking now would time absence too early.
-            if lastIdle < settings.idleBeforeCheck { backAtDesk(now, .typing, &out) } else { startChecking(now, &out) }
+            if lastIdle < settings.idleBeforeCheck {
+                backAtDesk(now, .typing, &out)
+            } else if mediaKeepsOn {
+                backAtDesk(now, .mediaPlaying, &out)
+            } else {
+                startChecking(now, &out)
+            }
         default:
             break
         }

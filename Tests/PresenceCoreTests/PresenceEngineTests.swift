@@ -820,3 +820,93 @@ private let motion = Event.observation(Observation(source: .camera, person: fals
         #expect(d.engine.reason == .checking)
     }
 }
+
+@Suite struct PresenceEngineMediaTests {
+    @Test func mediaPlayingStopsAnIdleCheckFromStarting() {
+        var d = Driver()
+        d.at(5, .mediaPlaying(true))
+        #expect(d.at(30, .idle(seconds: 30)) == [.listen(true)])
+        #expect(d.state == .present)
+        #expect(d.engine.reason == .mediaPlaying)
+        for t in stride(from: 31.0, through: 600, by: 1) { #expect(!d.at(t, .idle(seconds: t)).contains(.screensOff)) }
+    }
+
+    @Test func mediaStartingDuringGraceKeepsTheScreensOn() {
+        var d = Driver()
+        d.toGrace()
+        #expect(d.at(65, .mediaPlaying(true)) == [.hideGrace, .sample(.off)])
+        #expect(d.state == .present)
+        #expect(d.engine.reason == .mediaPlaying)
+        #expect(d.at(80, .tick) == [])
+    }
+
+    @Test func mediaStartingWhileCheckingEndsTheCheck() {
+        var d = Driver()
+        d.toChecking()
+        #expect(d.at(40, .mediaPlaying(true)) == [.sample(.off)])
+        #expect(d.state == .present)
+    }
+
+    @Test func mediaNeverWakesFromAway() {
+        var d = Driver()
+        d.toAway()
+        #expect(d.at(80, .mediaPlaying(true)) == [])
+        #expect(d.state == .away)
+    }
+
+    @Test func mediaStoppingResumesTheNormalRules() {
+        var d = Driver()
+        d.at(5, .mediaPlaying(true))
+        d.at(100, .idle(seconds: 100))
+        d.at(200, .mediaPlaying(false))
+        #expect(d.at(201, .idle(seconds: 201)).contains(.sample(.checking)))
+        d.at(220, nobody)
+        #expect(d.at(231, .tick) == [.showGrace(seconds: 10)])
+        #expect(d.at(241, .tick).contains(.screensOff))
+    }
+
+    @Test func mediaIsIgnoredWhenTheSettingIsOff() {
+        var s = Settings()
+        s.respectMediaPlaying = false
+        var d = Driver(s)
+        d.at(5, .mediaPlaying(true))
+        d.toGrace()
+        #expect(d.at(70, .tick).contains(.screensOff))
+    }
+
+    @Test func turningTheSettingOnDuringGraceStopsIt() {
+        var s = Settings()
+        s.respectMediaPlaying = false
+        var d = Driver(s)
+        d.at(5, .mediaPlaying(true))
+        d.toGrace()
+        s.respectMediaPlaying = true
+        d.engine.update(settings: s)
+        #expect(d.at(65, .tick) == [.hideGrace, .sample(.off)])
+    }
+
+    @Test func aTimedHoldEndingDuringMediaStaysPresent() {
+        var d = Driver()
+        d.at(1, .mediaPlaying(true))
+        d.at(10, .idle(seconds: 40))
+        d.at(11, .command(.hold(minutes: 1)))
+        #expect(!d.at(71, .idle(seconds: 101)).contains(.sample(.checking)))
+        #expect(d.state == .present)
+        #expect(d.engine.reason == .mediaPlaying)
+    }
+
+    @Test func mediaReportedWhileOffCountsOnceEnabled() {
+        var d = Driver(enabled: false)
+        d.at(0, .mediaPlaying(true))
+        d.at(1, .enable)
+        #expect(d.at(40, .idle(seconds: 40)) == [.listen(true)])
+        #expect(d.state == .present)
+    }
+
+    @Test func sleepCommandStillWorksDuringMedia() {
+        var d = Driver()
+        d.at(1, .mediaPlaying(true))
+        #expect(d.at(2, .command(.sleep)).contains(.screensOff))
+        #expect(d.state == .away)
+    }
+}
