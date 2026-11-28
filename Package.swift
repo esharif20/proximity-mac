@@ -11,7 +11,7 @@ let package = Package(
         // Pure decision logic. Foundation only, no hardware.
         .target(name: "PresenceCore"),
         // Hardware adapters: camera, idle time, microphone, speech, displays.
-        .target(name: "PresenceSensors", dependencies: ["PresenceCore"]),
+        .target(name: "PresenceSensors", dependencies: ["PresenceCore"], resources: [.copy("Resources/SFace.mlmodelc")]),
         // Menu bar app: runs the engine and executes its effects.
         .executableTarget(name: "ProximityMacApp", dependencies: ["PresenceCore", "PresenceSensors"]),
         .testTarget(
