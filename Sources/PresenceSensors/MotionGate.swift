@@ -57,24 +57,58 @@ struct MotionGate {
     /// This many changed cells (1% of the grid) is motion: a hand moving at the desk changes about 30.
     static let minChangedCells = 12
 
+    /// The central two thirds of the grid's width: a person at the desk is there, someone walking past the
+    /// side of the room is not. Full height, since a head bent over a phone sits low in the frame.
+    static let centralColumns = LumaGrid.columns / 6..<LumaGrid.columns - LumaGrid.columns / 6
+
+    /// What one comparison saw: `any` drives Vision, `central` is reported as `Observation.motion`.
+    struct Change: Equatable {
+        var any = false
+        var central = false
+    }
+
     private var previous: LumaGrid?
 
     /// Compares with the previous frame and keeps this one for the next comparison.
     mutating func update(_ grid: LumaGrid) -> Bool {
+        compare(grid).any
+    }
+
+    /// Like `update`, also saying whether the change was in the central columns.
+    mutating func compare(_ grid: LumaGrid) -> Change {
         defer { previous = grid }
         guard let previous, previous.cells.count == grid.cells.count,
               grid.cells.count == LumaGrid.columns * LumaGrid.rows
-        else { return false }
-        var changed = 0
+        else { return Change() }
+        var changed = 0, central = 0
         for i in grid.cells.indices where abs(Int(grid.cells[i]) - Int(previous.cells[i])) > Self.cellThreshold {
             changed += 1
-            if changed >= Self.minChangedCells { return true }
+            if Self.centralColumns.contains(i % LumaGrid.columns) { central += 1 }
+            if central >= Self.minChangedCells { break }
         }
-        return false
+        return Change(any: changed >= Self.minChangedCells, central: central >= Self.minChangedCells)
     }
 
     /// Forgets the previous frame, so a camera restart is not compared with a frame from long ago.
     mutating func reset() {
         previous = nil
+    }
+}
+
+/// Carries central motion from every grid to the next delivered Observation, so a small movement between
+/// two Vision passes still counts.
+struct MotionTally {
+    private(set) var seen = false
+
+    mutating func note(_ change: MotionGate.Change) {
+        if change.central { seen = true }
+    }
+
+    /// The observation with `motion` set, and the tally started again for the next one.
+    mutating func stamp(_ observation: Observation) -> Observation {
+        var stamped = observation
+        stamped.motion = seen
+        seen = false
+        return stamped
     }
 }

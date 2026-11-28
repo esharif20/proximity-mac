@@ -21,6 +21,7 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         var gridThrottle = FrameThrottle(interval: nil)
         /// From the latest grid, at most `gridInterval` old when a sample is taken.
         var brightness: Double?
+        var motionTally = MotionTally()
         var handler: (@Sendable (Observation) -> Void)?
         var calibration: Calibration?
         var deskRadiusCm = Settings().deskRadiusCm
@@ -80,6 +81,7 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
             s.motion.reset()
             s.gridThrottle = FrameThrottle(interval: mode == .off ? nil : CameraSource.gridInterval)
             s.brightness = nil
+            s.motionTally = MotionTally()
             if s.calibrationWidths == nil { s.throttle = FrameThrottle(interval: FrameThrottle.interval(for: mode)) }
         }
         reconcile()
@@ -248,21 +250,22 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         // Locking a frame's pixels costs about 0.3 ms, so the grid is taken on a few frames a second, not all.
         let wantsGrid = state.withLock { $0.gridThrottle.shouldSample(at: now) }
         let grid = wantsGrid ? LumaGrid(sampling: pixels) : nil
-        let (take, calibrating, continuing, signature, brightness, moved) = state.withLock { s in
+        let (take, calibrating, continuing, signature, brightness, fullChain) = state.withLock { s in
             if s.calibrationWidths != nil, s.calibrationStart == nil { s.calibrationStart = now }
             if let check = s.ownerCheck, check.isStale(at: now) { s.ownerCheck = nil }
-            let moved = grid.map { s.motion.update($0) } ?? false
+            let change = grid.map { s.motion.compare($0) } ?? MotionGate.Change()
+            s.motionTally.note(change)
             if let grid { s.brightness = grid.brightness }
             // The frames right after a sample finish its owner check, whatever the throttle says.
             if s.ownerCheck != nil {
-                if moved { s.schedule.noteMotion() }
-                return (true, false, true, s.signature, s.brightness, moved)
+                if change.any { s.schedule.noteMotion() }
+                return (true, false, true, s.signature, s.brightness, false)
             }
             if s.calibrationWidths != nil {
-                return (s.throttle.shouldSample(at: now), true, false, s.signature, s.brightness, moved)
+                return (s.throttle.shouldSample(at: now), true, false, s.signature, s.brightness, false)
             }
-            let pass = s.schedule.shouldRun(at: now, moved: moved)
-            return (pass != nil, false, false, s.signature, s.brightness, pass == .motion)
+            let pass = s.schedule.shouldRun(at: now, moved: change.any)
+            return (pass != nil, false, false, s.signature, s.brightness, Self.runsFullChain(mode: s.mode, pass: pass))
         }
         guard take else { return }
         vision.dropIdlePoses(cameraStopped: false)
@@ -278,19 +281,19 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
 
         guard let face = vision.largestFace(in: pixels, imageWidth: imageWidth) else {
             if calibrating { return }
-            let (handler, calibration, desk) = state.withLock { ($0.handler, $0.calibration, $0.deskRadiusCm) }
-            handler?(withoutFace(pixels, moved: moved, calibration: calibration, deskRadiusCm: desk, brightness: brightness))
+            let (calibration, desk) = state.withLock { ($0.calibration, $0.deskRadiusCm) }
+            deliver(withoutFace(pixels, fullChain: fullChain, calibration: calibration, deskRadiusCm: desk, brightness: brightness))
             return
         }
         if calibrating {
             state.withLock { $0.calibrationWidths?.append(face.measure.widthPx * Self.captureWidthPx / imageWidth) }
             return
         }
-        let (handler, calibration) = state.withLock { ($0.handler, $0.calibration) }
+        let calibration = state.withLock { $0.calibration }
         let observation = Self.observation(
             face: face.measure, bodyWidthPx: nil, imageWidthPx: imageWidth, calibration: calibration, brightness: brightness)
         guard let signature, OwnerCheck.wanted(for: observation) else {
-            handler?(observation)
+            deliver(observation)
             return
         }
         let match = ownerMatches(pixels, face: face.observation, signature: signature)
@@ -298,14 +301,26 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         finishOwnerCheck(match)
     }
 
+    /// Checking must not miss someone who is still at the desk but not facing it, so every Checking pass runs
+    /// the whole chain. Watching keeps body and hand pose to motion passes: they cost CPU and memory while Away.
+    static func runsFullChain(mode: SamplingMode, pass: VisionSchedule.Pass?) -> Bool {
+        pass == .motion || (pass != nil && mode == .checking)
+    }
+
+    /// Hands an Observation to the handler with the motion seen since the previous one, and starts counting again.
+    private func deliver(_ observation: Observation) {
+        let (stamped, handler) = state.withLock { s in (s.motionTally.stamp(observation), s.handler) }
+        handler?(stamped)
+    }
+
     /// Bodies and hands only when there is no face: a face already answers "person" and gives a better distance.
     private func withoutFace(
-        _ pixels: CVPixelBuffer, moved: Bool, calibration: Calibration?, deskRadiusCm: Double, brightness: Double?
+        _ pixels: CVPixelBuffer, fullChain: Bool, calibration: Calibration?, deskRadiusCm: Double, brightness: Double?
     ) -> Observation {
         let imageWidth = Double(CVPixelBufferGetWidth(pixels))
         let vision = vision
         return Self.observationWithoutFace(
-            moved: moved,
+            fullChain: fullChain,
             passes: .init(
                 body: { vision.bodyJoints(in: pixels) },
                 box: { vision.widestUpperBody(in: pixels).map { $0 * imageWidth } },
@@ -322,7 +337,7 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
                 return nil
             }
             s.ownerCheck = nil
-            var observation = check.observation
+            var observation = s.motionTally.stamp(check.observation)
             observation.owner = owner
             return (observation, s.handler)
         }

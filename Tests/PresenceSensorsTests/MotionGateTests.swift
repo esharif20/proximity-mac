@@ -85,4 +85,28 @@ import Testing
         let moved = gate.update(LumaGrid(cells: [1, 2, 3]))
         #expect(!moved)
     }
+
+    @Test func motionAtTheSideIsNotCentral() {
+        var gate = MotionGate()
+        _ = gate.compare(Self.scene(blockAt: 0, size: 4))
+        let side = gate.compare(Self.scene(blockAt: 2, y: 20, size: 4))
+        #expect(side.any, "the gate still wakes Vision for it")
+        #expect(!side.central)
+        _ = gate.compare(Self.scene(blockAt: 10))
+        let middle = gate.compare(Self.scene(blockAt: 13))
+        #expect(middle == MotionGate.Change(any: true, central: true))
+    }
+
+    @Test func motionIsCarriedToTheNextObservationOnly() {
+        var gate = MotionGate()
+        var tally = MotionTally()
+        let blank = Observation(source: .camera, person: false)
+        tally.note(gate.compare(Self.scene(blockAt: 10)))
+        tally.note(gate.compare(Self.scene(blockAt: 13)))
+        // The grid after the movement is still, as on the frame the next pass runs on.
+        tally.note(gate.compare(Self.scene(blockAt: 13)))
+        #expect(tally.stamp(blank).motion == true, "movement between passes counts")
+        tally.note(gate.compare(Self.scene(blockAt: 13)))
+        #expect(tally.stamp(blank).motion == false, "used up by the previous Observation")
+    }
 }

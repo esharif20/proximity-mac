@@ -87,7 +87,7 @@ import Testing
         calls: Calls = Calls()
     ) -> Observation {
         CameraSource.observationWithoutFace(
-            moved: moved,
+            fullChain: moved,
             passes: .init(
                 body: { calls.log.append("body"); return body },
                 box: { calls.log.append("box"); return box },
@@ -126,6 +126,28 @@ import Testing
         let o = Self.faceless(moved: false, body: Self.headCutOff, hands: [Self.closeHand], calls: calls)
         #expect(!o.person)
         #expect(calls.log == ["box"])
+    }
+
+    /// Sitting at the desk looking down at a phone: the head is bowed so the nose is hidden, the neck and
+    /// shoulders still show, and nothing moves enough for a motion pass.
+    static let headDown = BodyJoints(
+        nose: nil, neck: CGPoint(x: 320, y: 300), leftShoulder: CGPoint(x: 220, y: 320), rightShoulder: CGPoint(x: 420, y: 320))
+
+    @Test func aHeadDownBodyCountsAsCloseOnAStillCheckingPass() throws {
+        let fullChain = CameraSource.runsFullChain(mode: .checking, pass: .still)
+        let calls = Calls()
+        let o = Self.faceless(moved: fullChain, body: Self.headDown, calls: calls)
+        #expect(o.person)
+        #expect(try #require(o.distanceCm) <= Settings().deskRadiusCm, "close, so no grace countdown")
+        #expect(calls.log == ["body"])
+    }
+
+    @Test func onlyCheckingRunsTheFullChainWithoutMotion() {
+        #expect(CameraSource.runsFullChain(mode: .checking, pass: .still))
+        #expect(CameraSource.runsFullChain(mode: .checking, pass: .motion))
+        #expect(!CameraSource.runsFullChain(mode: .watching, pass: .still), "pose stays off while Away and still")
+        #expect(CameraSource.runsFullChain(mode: .watching, pass: .motion))
+        #expect(!CameraSource.runsFullChain(mode: .checking, pass: nil))
     }
 
     @Test func aHandCountsOnlyInsideTheDeskRadius() {

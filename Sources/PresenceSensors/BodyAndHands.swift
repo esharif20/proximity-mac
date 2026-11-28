@@ -62,20 +62,21 @@ extension CameraSource {
 
     /// Body pose first, since it sees a torso with the head above the frame; then the upper-body box; hands
     /// last, so a person already seen far away is never turned into a close one by a stray hand. Body and
-    /// hand pose run on motion frames only: someone who just stood up or waved has moved, and an empty still
-    /// room then costs only the face and box passes.
+    /// hand pose run only when `fullChain` is set: on every Checking pass, since someone looking down at a
+    /// phone barely moves, and on motion passes while Watching, so an empty still room then costs only the
+    /// face and box passes.
     static func observationWithoutFace(
-        moved: Bool, passes: FacelessPasses, imageWidthPx: Double, calibration: Calibration?, deskRadiusCm: Double,
+        fullChain: Bool, passes: FacelessPasses, imageWidthPx: Double, calibration: Calibration?, deskRadiusCm: Double,
         brightness: Double?
     ) -> Observation {
-        if moved, let body = passes.body(),
+        if fullChain, let body = passes.body(),
            let seen = observation(body: body, imageWidthPx: imageWidthPx, calibration: calibration, brightness: brightness) {
             return seen
         }
         if let box = passes.box() {
             return observation(face: nil, bodyWidthPx: box, imageWidthPx: imageWidthPx, calibration: calibration, brightness: brightness)
         }
-        if moved, let hand = observation(
+        if fullChain, let hand = observation(
             hands: passes.hands(), imageWidthPx: imageWidthPx, calibration: calibration, deskRadiusCm: deskRadiusCm,
             brightness: brightness) {
             return hand
