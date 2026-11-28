@@ -2,7 +2,29 @@
 
 A macOS menu bar app that turns your screens off when you walk away from the desk and back on when you sit down again. It watches with the built-in camera, listens for a few spoken Commands, and does everything on the Mac.
 
-Screens Off means every display, built-in and external, goes dark while the Mac stays awake and your session stays exactly as you left it. It never puts the Mac into System Sleep, so it can still see you come back and hear "Screen, wake up".
+Screens Off means your displays go dark while the Mac stays awake and your session stays exactly as you left it. It never puts the Mac into System Sleep, so it can still see you come back and hear "Screen, wake up".
+
+## Monitors Off
+
+By default Screens Off is Monitors Off: external displays go black and the MacBook's own display shows the Away screen, a dark screen with a small clock. Because no display actually sleeps, macOS never starts its lock delay, and you come back to your desktop without a password. In a dim room the Away screen glows softly for a moment when the camera sees movement, so it can light your face.
+
+To have every display go dark instead, turn off "Keep the MacBook screen on while away (Monitors Off)" in Settings > Away. Then macOS may ask for your password on return (see the lock delay below).
+
+## Films and presentations
+
+While a video or a presentation is playing, Proximity Mac keeps the screens on, so sitting back on the sofa to watch a film doesn't start a countdown. It goes by the same signal macOS itself uses to keep the display awake for video. Turn this off with "Keep screens on while a video is playing" in Settings > Away.
+
+## Phone link
+
+You can link your phone or Apple Watch in Setup. Its Bluetooth signal says whether it is near the desk, which helps when the camera can't see you: a phone still at the desk keeps the screens on, and a phone that has left with you counts towards Away. The Phone link never wakes the screens by itself, because a phone can be left on the desk.
+
+Setup lists the named devices nearby with their signal. Pick yours, hold it at the desk while Setup measures for 5 seconds, then take it to your bed or the door and measure again. If the two places are less than 8 dB apart, Setup says the signal can't tell them apart and doesn't save the link. Settings > Phone or watch shows the device, its signal now, and "Forget".
+
+iPhones change their Bluetooth address about every 15 minutes. A Mac can follow the change only for devices signed in to the same Apple ID, so link a phone or watch on your own Apple ID. `docs/spikes/ble.md` has the details.
+
+## Why the screens are on or off
+
+The menu shows one line under the state with the Reason: for example that you are typing, that you were seen close, that your phone is near, that a video is playing, or that nobody has been seen.
 
 While Proximity Mac is on, it also stops the Mac from going into idle System Sleep, so overnight jobs keep running with the screens off. The displays can still sleep on their own schedule. Turn Proximity Mac off or quit it and the Mac sleeps as usual again. You can see this in `pmset -g assertions` as "Proximity Mac keeps the Mac awake".
 
@@ -27,13 +49,14 @@ Setup opens on first launch, and any time from the menu with "Run Setup…". It 
 3. Lean back, then stand behind your chair. A map of the room shows where you count as at the desk, and sets the Desk radius from it. You can adjust it with a slider.
 4. Look at each monitor, to see that you still count while looking away from the camera.
 5. Go to your bed. It should say "Not counted"; if not, Setup offers to shrink the radius.
-6. Optionally enrol your face as the Owner (see below). Skip keeps it off.
-7. Say "Screen, wake up" to test a Command.
-8. See how long macOS waits before it asks for your password (the Lock screen step).
+6. Optionally link your phone or watch (see Phone link above). Continue skips it.
+7. Optionally enrol your face as the Owner (see below). Skip keeps it off.
+8. Say "Screen, wake up" to test a Command.
+9. See how long macOS waits before it asks for your password (the Lock screen step).
 
 ## The macOS lock delay
 
-If macOS asks for your password or Touch ID when you come back, that is macOS, not Proximity Mac. System Settings > Lock Screen has "Require password after screen saver begins or display is turned off", and once Screens Off has lasted longer than that delay, macOS locks. Setup and Settings show the current delay and a button to open Lock Screen settings. Proximity Mac never changes it. Turn on "Lock when away" if you want the Mac to lock as soon as you are Away.
+With Monitors Off (the default) the displays never sleep, so this delay never starts. With it turned off, if macOS asks for your password or Touch ID when you come back, that is macOS, not Proximity Mac. System Settings > Lock Screen has "Require password after screen saver begins or display is turned off", and once Screens Off has lasted longer than that delay, macOS locks. Setup and Settings show the current delay and a button to open Lock Screen settings. Proximity Mac never changes it. Turn on "Lock when away" if you want the Mac to lock as soon as you are Away.
 
 ## Only wake for me
 
@@ -67,6 +90,7 @@ With Reduce Motion on, nothing pulses and changes are instant.
 - No network. The app contains no network code and sends nothing anywhere.
 - Nothing stored. Camera frames and audio stay in memory and are dropped right away. Speech is recognised on the Mac, and only the parsed Command is kept.
 - The Face signature is opt-in. Enrolling saves 128-number face embeddings (a mean and up to three pose clusters) as one item in your login Keychain, never a picture or a frame. It is never synced to iCloud, and "Delete my face signature" in Settings removes it. Because builds are ad-hoc signed, the Keychain can't mark the item as this Mac only, so a Time Machine restore or Migration Assistant can copy it to another Mac along with the rest of your login keychain.
+- The Phone link only listens. The Mac hears the Bluetooth adverts your phone or watch already sends and never connects to it. Its name and two signal levels are kept in the app's settings, and the name never goes in the feature log.
 - The feature log is opt-in and off by default. When on, it writes timed events to `~/Library/Application Support/ProximityMac/traces/`, as numbers only: idle seconds, whether a person was seen, distance and the Command. It never holds images, sound or words. "That was wrong" in the menu adds a marker so a bad decision can be replayed.
 
 ## Install
@@ -84,6 +108,7 @@ Requires macOS 26 or later.
 | Camera | To see whether you are at the desk. It runs only while checking or Away. |
 | Microphone | To hear Commands after a while without input. It never listens while another app uses the microphone, for example during a call. |
 | Speech Recognition | To turn speech into a Command on the Mac. |
+| Bluetooth | Only if you link a phone or watch, to hear its signal. Asked for the first time you open that Setup step. |
 
 Launch at login is a toggle in Settings.
 
