@@ -6,6 +6,7 @@ struct SettingsView: View {
     @Bindable var coordinator: Coordinator
     @State private var opensAtLogin = SMAppService.mainApp.status == .enabled
     @State private var confirmingDelete = false
+    @State private var phoneSignal = PhoneSignal()
 
     var body: some View {
         Form {
@@ -26,6 +27,39 @@ struct SettingsView: View {
                         value: $coordinator.settings.stopWatchingAfterMinutes, in: 5...240, step: 5)
                 Toggle("Lock when away", isOn: $coordinator.settings.lockWhenAway)
                 LockDelayNote()
+            }
+            Section("Away") {
+                Toggle("Keep the MacBook screen on while away (Monitors Off)", isOn: $coordinator.settings.keepBuiltInOn)
+                Toggle("Keep screens on while a video is playing", isOn: $coordinator.settings.respectMediaPlaying)
+            }
+            Section("Phone or watch") {
+                if let phone = coordinator.settings.phone {
+                    LabeledContent("Device", value: phone.name)
+                    LabeledContent("Signal now") {
+                        HStack(spacing: 8) {
+                            Text(phoneSignal.rssi.map { "\(Int($0.rounded())) dBm" } ?? "Not heard")
+                                .monospacedDigit()
+                                .contentTransition(.numericText())
+                            SignalBars(rssi: phoneSignal.rssi)
+                        }
+                    }
+                    Text("At the desk \(Int(phone.nearRssi.rounded())) dBm, far away \(Int(phone.farRssi.rounded())) dBm.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    HStack {
+                        Spacer()
+                        Button("Forget", role: .destructive) { coordinator.settings.phone = nil }
+                    }
+                } else {
+                    Text("Link your phone or watch in Setup, so its signal helps tell when you've left.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Open Setup") { coordinator.openSetup() }
+                }
+            }
+            .onChange(of: coordinator.settings.phone?.identifier, initial: true) { _, identifier in
+                phoneSignal.listen(to: identifier)
             }
             Section("Distance") {
                 LabeledContent("Distance now", value: coordinator.lastDistanceCm.map { "\(Int($0.rounded())) cm" } ?? "Not seen")
@@ -83,7 +117,10 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .onAppear { coordinator.setPreviewing(true) }
-        .onDisappear { coordinator.setPreviewing(false) }
+        .onDisappear {
+            coordinator.setPreviewing(false)
+            phoneSignal.listen(to: nil)
+        }
         .frame(width: 420)
         .fixedSize(horizontal: false, vertical: true)
     }
