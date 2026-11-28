@@ -1,6 +1,6 @@
-lane core: GH-7 GH-2 GH-9 GH-11
-lane sensors: GH-3 GH-6 GH-10 GH-12
-lane app: GH-4 GH-5 GH-8 GH-13 GH-14
+lane core: GH-7 GH-2 GH-9 GH-11 (retired; PresenceEngine files moved to sensors for GH-28)
+lane sensors: GH-3 GH-6 GH-10 GH-12 GH-25 GH-28 GH-29
+lane app: GH-4 GH-5 GH-8 GH-13 GH-14 GH-30
 skills core: tdd
 skills sensors: write-swift
 skills app: write-swift apple-design
