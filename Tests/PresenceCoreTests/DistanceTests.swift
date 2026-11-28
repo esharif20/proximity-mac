@@ -101,4 +101,13 @@ import Testing
         #expect(Distance.calibration(fromFaceWidths: [200, 200, 200, 200, .nan], imageWidthPx: 1280, distanceCm: 60) == nil)
         #expect(Distance.calibration(fromFaceWidths: [200, 200, 200, 200, 200], imageWidthPx: 0, distanceCm: 60) == nil)
     }
+
+    @Test func personShareFollowsTheInverseSquareRoot() {
+        #expect(abs(Distance.estimate(personShare: 0.30) - 60) < 0.001)
+        #expect(abs(Distance.estimate(personShare: 0.075) - 120) < 0.001, "a quarter of the area is twice as far")
+        #expect(Distance.estimate(personShare: 0.15) < 120, "a seated person at 15% is inside the default Desk radius")
+        #expect(Distance.estimate(personShare: 0.02) > 200, "a few percent is across the room")
+        #expect(Distance.estimate(personShare: 0) == .infinity)
+        #expect(Distance.estimate(personShare: .nan) == .infinity)
+    }
 }
