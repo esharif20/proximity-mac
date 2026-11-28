@@ -1,10 +1,31 @@
 {
-  "note": "10-minute averages on an M1 Pro. cpuPercent is the average share of one core, wakeupsPerSecond counts idle wakeups, memoryMB is the phys footprint.",
+  "note": "Limits per mode. active and listening: 10-minute averages. checking and away: only the seconds the camera is on (cameraOn* keys), since the running capture session alone costs about 2.9% CPU and 110 MB (docs/spikes/camera-cost.md). reading: 10 minutes idle at the desk with the real engine cycle; whole-run average CPU and peak footprint. memoryMB is the phys footprint; wakeupsPerSecond needs powermetrics.",
   "regressionTolerance": 0.2,
   "modes": {
-    "active":    { "cpuPercent": 0.1, "wakeupsPerSecond": 1, "memoryMB": 40 },
-    "checking":  { "cpuPercent": 2.0, "wakeupsPerSecond": 5, "memoryMB": 60 },
-    "away":      { "cpuPercent": 1.5, "wakeupsPerSecond": 5, "memoryMB": 60 },
-    "listening": { "cpuPercent": 1.0, "wakeupsPerSecond": 5, "memoryMB": 60 }
+    "active": {
+      "cpuPercent": 0.1,
+      "wakeupsPerSecond": 1,
+      "memoryMB": 40
+    },
+    "checking": {
+      "cameraOnCpuPercent": 5.0,
+      "wakeupsPerSecond": 5,
+      "cameraOnMemoryMB": 130
+    },
+    "away": {
+      "cameraOnCpuPercent": 5.0,
+      "wakeupsPerSecond": 5,
+      "cameraOnMemoryMB": 130
+    },
+    "listening": {
+      "cpuPercent": 1.0,
+      "wakeupsPerSecond": 5,
+      "memoryMB": 60
+    },
+    "reading": {
+      "cpuPercent": 1.0,
+      "wakeupsPerSecond": 5,
+      "peakMemoryMB": 130
+    }
   }
 }

@@ -21,6 +21,8 @@ public struct PresenceEngine {
     private var recheckNotBefore: Double = -.infinity
     /// Set by "go to sleep" said at the desk: a close face must not undo it until the person has left once.
     private var sleptAtDesk = false
+    /// When the current Away began; watching stops `stopWatchingAfterMinutes` later (overnight, say).
+    private var awayStarted: Double = 0
 
     public init(settings: Settings) {
         self.settings = settings
@@ -77,7 +79,7 @@ public struct PresenceEngine {
                 break
             }
         case .command(.sleep):
-            goAway(&out)
+            goAway(now, &out)
             sleptAtDesk = true
         case .command(.wake):
             switch settings.wakeUpMode {
@@ -127,7 +129,10 @@ public struct PresenceEngine {
         setSampling(.checking, &out)
     }
 
-    private mutating func goAway(_ out: inout [Effect]) {
+    private mutating func goAway(_ now: Double, _ out: inout [Effect]) {
+        // "Go to sleep" said while already Away must not restart the timer and turn watching back on.
+        if state == .away { return }
+        awayStarted = now
         state = .away
         sleptAtDesk = false
         setGrace(false, &out)
@@ -153,7 +158,10 @@ public struct PresenceEngine {
             state = .grace(until: now + Double(settings.graceSeconds))
             setGrace(true, &out)
         case .grace(let until) where now >= until:
-            goAway(&out)
+            goAway(now, &out)
+        case .away where now - awayStarted >= settings.stopWatchingAfterMinutes * 60:
+            // Long gone: stop paying for the camera. Input, "wake up" and "keep it on" still wake.
+            setSampling(.off, &out)
         case .hold(let until?) where now >= until:
             // Someone typing when the hold runs out is at the desk; checking now would time absence too early.
             if lastIdle < settings.idleBeforeCheck { backAtDesk(now, &out) } else { startChecking(now, &out) }

@@ -1,5 +1,6 @@
-// Counts the seconds any camera is running, polling once a second for `argv[1]` seconds.
-// Built and run by scripts/bench.sh so each mode reports how long the camera was on.
+// With a number of seconds, counts the seconds any camera is running, polling once a second.
+// With no argument, prints 1 if a camera is running now, else 0.
+// Built and run by scripts/bench.sh so each mode reports when and how long the camera was on.
 import CoreMediaIO
 import Foundation
 
@@ -31,7 +32,10 @@ func anyRunning() -> Bool {
     }
 }
 
-let seconds = Int(CommandLine.arguments.dropFirst().first ?? "") ?? 60
+guard let arg = CommandLine.arguments.dropFirst().first, let seconds = Int(arg) else {
+    print(anyRunning() ? 1 : 0)
+    exit(0)
+}
 var on = 0
 for _ in 0..<seconds {
     if anyRunning() { on += 1 }

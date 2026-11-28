@@ -101,6 +101,23 @@ import Testing
         #expect(MicUsage.otherAppCapturing(processes: processes, ownPID: 42))
     }
 
+    @Test func appleSpeechDaemonListeningForUsIsNotACall() {
+        // Seen on this Mac: corespeechd starts capturing as soon as our SpeechAnalyzer listens.
+        let processes = [
+            MicUsage.ProcessInput(pid: 42, runningInput: true, name: "ProximityMac"),
+            MicUsage.ProcessInput(pid: 1286, runningInput: true, name: "corespeechd"),
+        ]
+        #expect(!MicUsage.otherAppCapturing(processes: processes, ownPID: 42))
+    }
+
+    @Test func aCallAppAlongsideTheSpeechDaemonStillCounts() {
+        let processes = [
+            MicUsage.ProcessInput(pid: 1286, runningInput: true, name: "corespeechd"),
+            MicUsage.ProcessInput(pid: 500, runningInput: true, name: "zoom.us"),
+        ]
+        #expect(MicUsage.otherAppCapturing(processes: processes, ownPID: 42))
+    }
+
     @Test func playbackOnlyAppsDoNotCount() {
         let processes = [MicUsage.ProcessInput(pid: 77, runningInput: false)]
         #expect(!MicUsage.otherAppCapturing(processes: processes, ownPID: 42))

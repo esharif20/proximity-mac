@@ -15,10 +15,15 @@ public struct MicUsage: MicUsageReading {
     struct ProcessInput: Equatable {
         var pid: pid_t
         var runningInput: Bool
+        var name: String = ""
     }
 
+    /// Apple's speech daemons capture input when our own SpeechAnalyzer listens (or for Siri). Neither is
+    /// a call, and counting them made listening stop and restart every few seconds.
+    static let speechDaemons: Set<String> = ["corespeechd", "localspeechrecognition", "speechrecognitiond"]
+
     static func otherAppCapturing(processes: [ProcessInput], ownPID: pid_t) -> Bool {
-        processes.contains { $0.runningInput && $0.pid != ownPID }
+        processes.contains { $0.runningInput && $0.pid != ownPID && !speechDaemons.contains($0.name) }
     }
 
     private static func defaultInputDevice() -> AudioObjectID? {
@@ -49,8 +54,14 @@ public struct MicUsage: MicUsageReading {
             var input: UInt32 = 0
             _ = read(id, kAudioProcessPropertyPID, into: &pid)
             _ = read(id, kAudioProcessPropertyIsRunningInput, into: &input)
-            return ProcessInput(pid: pid, runningInput: input != 0)
+            return ProcessInput(pid: pid, runningInput: input != 0, name: input != 0 ? processName(pid) : "")
         }
+    }
+
+    private static func processName(_ pid: pid_t) -> String {
+        var buffer = [CChar](repeating: 0, count: 256)
+        guard proc_name(pid, &buffer, UInt32(buffer.count)) > 0 else { return "" }
+        return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
 
     private static func read<T: FixedWidthInteger>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, into value: inout T) -> Bool {
