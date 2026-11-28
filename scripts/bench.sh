@@ -1,10 +1,12 @@
 #!/bin/sh
 # Measures the app's CPU, idle wakeups and memory in one mode and checks them against bench/budget.json.
 #
-#   scripts/bench.sh <active|checking|away|listening> [minutes]   (default 10 minutes)
+#   scripts/bench.sh <active|checking|away|listening|reading> [minutes]   (default 10 minutes)
 #
-# The app is launched with `--bench-mode <mode>`, which holds the engine in that mode. Until the app
-# understands the flag, this measures the bare app, which is still a valid floor for "active".
+# The app is launched with `--bench-mode <mode>`. Most modes hold the engine in one state; `reading`
+# runs the real engine with the person idle at the desk, so the camera cycles on and off.
+# checking and away are budgeted only over the seconds the camera is on (cameraOn* keys); reading
+# is budgeted on its whole-run average CPU and its peak footprint.
 # Writes bench/results/<date>-<mode>.json. Exits 1 on a budget breach, 2 on a regression over
 # bench/baseline.json (when it has this mode). Wakeups and energy impact need powermetrics, so they are
 # measured only with BENCH_POWERMETRICS=1 and passwordless sudo; otherwise they are reported as unmeasured.
@@ -13,8 +15,8 @@ set -eu
 mode=${1:-}
 minutes=${2:-10}
 case "$mode" in
-  active|checking|away|listening) ;;
-  *) echo "usage: scripts/bench.sh <active|checking|away|listening> [minutes]" >&2; exit 64 ;;
+  active|checking|away|listening|reading) ;;
+  *) echo "usage: scripts/bench.sh <active|checking|away|listening|reading> [minutes]" >&2; exit 64 ;;
 esac
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -47,13 +49,20 @@ footprint_kb() {
 camera_out=$(mktemp)
 "$camera_probe" "$seconds" > "$camera_out" &
 camera_pid=$!
+now() { perl -MTime::HiRes=time -e 'printf "%.3f", time'; }
+# One row per interval: wall time, CPU time, RSS KB, footprint KB, camera on (1/0) at that moment.
+sample() {
+  printf '%s %s %s %s %s\n' "$(now)" "$(cpu_time)" "$(ps -o rss= -p "$pid" | tr -d ' ')" \
+    "$(footprint_kb)" "$("$camera_probe")" >> "$samples"
+}
 start_cpu=$(cpu_time); start_t=$(date +%s)
+sample
 elapsed=0
 while [ "$elapsed" -lt "$seconds" ]; do
   sleep "$interval"
   elapsed=$((elapsed + interval))
   kill -0 "$pid" 2>/dev/null || { echo "app exited during the run" >&2; exit 1; }
-  printf '%s %s\n' "$(ps -o rss= -p "$pid" | tr -d ' ')" "$(footprint_kb)" >> "$samples"
+  sample
 done
 end_cpu=$(cpu_time); end_t=$(date +%s)
 wait "$camera_pid" || true
@@ -86,9 +95,19 @@ def cpu_seconds(s):
 
 wall = max(1, int(t1) - int(t0))
 rows = [line.split() for line in open(samples) if line.strip()]
-rss = [int(r[0]) for r in rows]
-foot = [int(r[1]) for r in rows if len(r) > 1]
-mem_kb = foot if foot else rss
+rows = [r for r in rows if len(r) == 5]
+rss = [int(r[2]) for r in rows]
+foot = [int(r[3]) for r in rows if r[3].isdigit() and int(r[3]) > 0]
+mem_kb = foot if len(foot) == len(rows) else rss
+
+# Intervals where the camera was on at both ends count as camera-on time.
+on_cpu = on_wall = 0.0
+on_mem = []
+for a, b in zip(rows, rows[1:]):
+    if a[4] == "1" and b[4] == "1":
+        on_wall += float(b[0]) - float(a[0])
+        on_cpu += cpu_seconds(b[1]) - cpu_seconds(a[1])
+        on_mem.append(int(b[3]) if mem_kb is foot else int(b[2]))
 result = {
     "mode": mode,
     "minutes": float(minutes),
@@ -97,6 +116,9 @@ result = {
     "memoryMB": round(sum(mem_kb) / len(mem_kb) / 1024, 2),
     "rssMB": round(sum(rss) / len(rss) / 1024, 2),
     "cameraOnSeconds": int(camera_on or 0),
+    "cameraOnCpuPercent": round(on_cpu / on_wall * 100, 3) if on_wall else None,
+    "cameraOnMemoryMB": round(sum(on_mem) / len(on_mem) / 1024, 2) if on_mem else None,
+    "peakMemoryMB": round(max(mem_kb) / 1024, 2),
     "peakRssMB": round(max(rss) / 1024, 2),
     "memorySource": "footprint" if foot else "rss",
 }
@@ -109,7 +131,8 @@ limits = budget["modes"][mode]
 status = 0
 wake = "unmeasured" if result["wakeupsPerSecond"] is None else result["wakeupsPerSecond"]
 print(f"{mode}: {result['cpuPercent']}% CPU, wakeups/s {wake}, {result['memoryMB']} MB footprint, "
-      f"{result['rssMB']} MB RSS, camera on {result['cameraOnSeconds']} s of {wall} ({out})")
+      f"{result['rssMB']} MB RSS, peak {result['peakMemoryMB']} MB, camera on {result['cameraOnSeconds']} s of {wall}, "
+      f"camera-on {result['cameraOnCpuPercent']}% CPU / {result['cameraOnMemoryMB']} MB ({out})")
 for key, limit in limits.items():
     if result.get(key) is None:
         print(f"UNMEASURED {key}")

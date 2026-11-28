@@ -1,21 +1,25 @@
 {
-  "note": "Measured 2026-11-27, 2-minute runs, release build, on the person's Mac. Wakeups unmeasured (no powermetrics). checking and away are over budget and are recorded as measured, not as targets.",
+  "note": "Measured 2026-11-28 on the person's Mac, release build: checking and away 2 minutes (camera-on seconds only), listening 2 minutes, reading 10 minutes, active from the 2026-11-27 run. Wakeups unmeasured (no powermetrics).",
   "modes": {
     "active": {
-      "cpuPercent": 0.057,
+      "cpuPercent": 0.049,
       "memoryMB": 19.0
     },
+    "listening": {
+      "cpuPercent": 0.568,
+      "memoryMB": 22.04
+    },
     "checking": {
-      "cpuPercent": 6.976,
-      "memoryMB": 136.88
+      "cameraOnCpuPercent": 4.805,
+      "cameraOnMemoryMB": 125.79
     },
     "away": {
-      "cpuPercent": 5.475,
-      "memoryMB": 133.75
+      "cameraOnCpuPercent": 4.366,
+      "cameraOnMemoryMB": 125.75
     },
-    "listening": {
-      "cpuPercent": 0.846,
-      "memoryMB": 22.04
+    "reading": {
+      "cpuPercent": 0.937,
+      "peakMemoryMB": 60.0
     }
   }
 }
