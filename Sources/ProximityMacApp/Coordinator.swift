@@ -86,6 +86,8 @@ final class Coordinator {
 
     init(seams: Seams = .live, store: SettingsStore = SettingsStore(), bench: BenchMode? = BenchMode(arguments: CommandLine.arguments)) {
         let settings = store.load()
+        var seams = seams
+        if bench == .reading { seams.idle = GrowingIdle() }
         self.seams = seams
         self.store = store
         self.bench = bench
@@ -100,6 +102,7 @@ final class Coordinator {
         self.logging = store.featureLog
 
         seams.camera.onObservation { [weak self] observation in
+            let observation = bench?.rewrite(observation) ?? observation
             Task { @MainActor in
                 if let distance = observation.distanceCm { self?.lastDistanceCm = distance }
                 self?.send(.observation(observation))
@@ -110,18 +113,18 @@ final class Coordinator {
         }
         startTimer()
 
-        if let bench {
+        if let bench, bench.pinsEngine {
             state = bench.state
             keepAwake.set(true)
             bench.effects.forEach(perform)
-        } else if store.enabled {
+        } else if bench == .reading || store.enabled {
             send(.enable)
         }
     }
 
     func send(_ event: Event) {
         clock = ProcessInfo.processInfo.systemUptime
-        guard bench == nil else { return }
+        guard bench?.pinsEngine != true else { return }
         if logging { log.append(TraceLine(t: clock, event: event)) }
         let effects = engine.handle(event, at: clock)
         if engine.state != state {
