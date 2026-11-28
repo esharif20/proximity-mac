@@ -187,6 +187,15 @@ final class VoiceSession: @unchecked Sendable {
         }
         try checkCurrent()
         let engine = AVAudioEngine()
+        // The default input buffer is about 10 ms, so the IO thread wakes about 100 times a second. A
+        // Command is seconds long, so 4096-frame buffers (about 85 ms) lose nothing and wake far less.
+        // The HAL applies this to our client only, not to other apps using the same device.
+        if let unit = engine.inputNode.audioUnit {
+            var frames = UInt32(4096)
+            AudioUnitSetProperty(
+                unit, kAudioDevicePropertyBufferFrameSize, kAudioUnitScope_Global, 0,
+                &frames, UInt32(MemoryLayout<UInt32>.size))
+        }
         let hardwareFormat = engine.inputNode.outputFormat(forBus: 0)
         guard
             let format = await SpeechAnalyzer.bestAvailableAudioFormat(
@@ -218,7 +227,7 @@ final class VoiceSession: @unchecked Sendable {
         session.configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
         ) { _ in onInterrupted() }
-        let bufferSize = AVAudioFrameCount(hardwareFormat.sampleRate * 0.03)
+        let bufferSize = AVAudioFrameCount(4096)
         engine.inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: hardwareFormat) { buffer, _ in
             session.process(buffer)
         }
@@ -237,15 +246,31 @@ final class VoiceSession: @unchecked Sendable {
         let samples = UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))
         let rms = EnergyGate<AVAudioPCMBuffer>.peakWindowRMS(samples, window: windowFrames)
         let seconds = Double(buffer.frameLength) / buffer.format.sampleRate
-        // The tap may reuse its buffer, so the gate keeps converted copies, never the tap's own memory.
-        guard let converted = convert(buffer) else { return }
-        let output = gate.push(converted, rms: rms, seconds: seconds)
-        for chunk in output.forward { input.yield(AnalyzerInput(buffer: chunk)) }
+        // The tap may reuse its buffer, so the gate keeps plain copies, never the tap's own memory. Only
+        // forwarded chunks are resampled: in a silent room that is none, and resampling every buffer cost
+        // more than the gate itself.
+        guard let copy = Self.copy(buffer) else { return }
+        let output = gate.push(copy, rms: rms, seconds: seconds)
+        for chunk in output.forward {
+            if let converted = convert(chunk) { input.yield(AnalyzerInput(buffer: converted)) }
+        }
         if output.closed {
             // End of a spoken segment: ask for final results now instead of waiting for more audio.
             let analyzer = self.analyzer
             Task { try? await analyzer.finalize(through: nil) }
         }
+    }
+
+    private static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let out = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength) else { return nil }
+        out.frameLength = buffer.frameLength
+        let source = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: buffer.audioBufferList))
+        let target = UnsafeMutableAudioBufferListPointer(out.mutableAudioBufferList)
+        for (from, to) in zip(source, target) {
+            guard let src = from.mData, let dst = to.mData else { return nil }
+            memcpy(dst, src, Int(min(from.mDataByteSize, to.mDataByteSize)))
+        }
+        return out
     }
 
     private func convert(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
