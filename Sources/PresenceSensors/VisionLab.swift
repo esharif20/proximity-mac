@@ -114,13 +114,17 @@ public final class VisionLab: @unchecked Sendable {
         reconcile()
     }
 
+    /// Returns once the camera is released, so the presence camera can take it over straight after.
     public func stop() {
         state.withLock { s in
             s.running = false
             s.handler = nil
         }
-        reconcile()
+        reconcile(wait: true)
     }
+
+    /// Whether a capture session exists, read on `sessionQueue` so it reflects every queued change.
+    var hasSession: Bool { sessionQueue.sync { session != nil } }
 
     /// Samples `seconds` of face widths, counted from the first frame after the call, and turns them into
     /// a calibration at the default sitting distance. Nil when the lab is not running or the face moved.
@@ -169,8 +173,8 @@ public final class VisionLab: @unchecked Sendable {
 
     // MARK: - Capture
 
-    private func reconcile() {
-        sessionQueue.async { [self] in
+    private func reconcile(wait: Bool = false) {
+        let apply = { [self] in
             let running = state.withLock { $0.running }
             if running {
                 if session == nil { session = makeSession() }
@@ -180,6 +184,7 @@ public final class VisionLab: @unchecked Sendable {
                 self.session = nil
             }
         }
+        if wait { sessionQueue.sync(execute: apply) } else { sessionQueue.async(execute: apply) }
     }
 
     private func makeSession() -> AVCaptureSession? {
@@ -190,7 +195,23 @@ public final class VisionLab: @unchecked Sendable {
         session.beginConfiguration()
         guard session.canAddInput(input) else { return nil }
         session.addInput(input)
-        session.sessionPreset = session.canSetSessionPreset(.hd1280x720) ? .hd1280x720 : .vga640x480
+        // 4:3 like CameraSource: its 640x480 covers the same field as any 4:3 format, so a calibration
+        // made here gives the same distances there. A 16:9 frame is wider and would skew them.
+        let sizes = device.formats.map { format -> (width: Int, height: Int) in
+            let size = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            return (Int(size.width), Int(size.height))
+        }
+        if let index = Self.captureFormatIndex(sizes), (try? device.lockForConfiguration()) != nil {
+            device.activeFormat = device.formats[index]
+            let ranges = device.activeFormat.videoSupportedFrameRateRanges.map { (min: $0.minFrameRate, max: $0.maxFrameRate) }
+            if let fps = Self.frameRate(ranges: ranges) {
+                device.activeVideoMinFrameDuration = CMTime(value: 1000, timescale: CMTimeScale((fps.max * 1000).rounded()))
+                device.activeVideoMaxFrameDuration = CMTime(value: 1000, timescale: CMTimeScale((fps.min * 1000).rounded()))
+            }
+            device.unlockForConfiguration()
+        } else {
+            session.sessionPreset = .vga640x480
+        }
         let output = AVCaptureVideoDataOutput()
         output.alwaysDiscardsLateVideoFrames = true
         output.setSampleBufferDelegate(delegate, queue: captureQueue)
@@ -198,6 +219,24 @@ public final class VisionLab: @unchecked Sendable {
         session.addOutput(output)
         session.commitConfiguration()
         return session
+    }
+
+    static let maxCaptureWidth = 1280
+    static let wantedFps = 15.0...30.0
+
+    /// The largest 4:3 format no wider than 1280, or nil to fall back to the 640x480 preset.
+    static func captureFormatIndex(_ formats: [(width: Int, height: Int)]) -> Int? {
+        formats.indices
+            .filter { formats[$0].width * 3 == formats[$0].height * 4 && formats[$0].width <= maxCaptureWidth }
+            .max { formats[$0].width < formats[$1].width }
+    }
+
+    /// The part of 15 to 30 fps the format supports, preferring the range that reaches highest.
+    static func frameRate(ranges: [(min: Double, max: Double)]) -> (min: Double, max: Double)? {
+        ranges
+            .map { (min: Swift.max($0.min, wantedFps.lowerBound), max: Swift.min($0.max, wantedFps.upperBound)) }
+            .filter { $0.min <= $0.max }
+            .max { $0.max < $1.max }
     }
 
     // MARK: - Frames
@@ -242,15 +281,16 @@ public final class VisionLab: @unchecked Sendable {
     }
 
     private func enrol(_ pixels: CVPixelBuffer, observation: VNFaceObservation, yaw: Double, pitch: Double, quality: Float) {
-        let accepted = state.withLock { s -> Bool in
-            guard var enrolment = s.enrolment, !enrolment.done else { return false }
-            defer { s.enrolment = enrolment }
-            return enrolment.filter.accept(yawDeg: yaw, pitchDeg: pitch, quality: quality)
+        let candidate = state.withLock { s -> Bool in
+            guard let enrolment = s.enrolment, !enrolment.done else { return false }
+            return enrolment.filter.isCandidate(yawDeg: yaw, pitchDeg: pitch, quality: quality)
         }
-        // The embedding runs outside the lock: it is a model call of several milliseconds.
-        guard accepted, let embedding = pipeline.recognizer.embedding(of: pixels, face: observation) else { return }
+        // The embedding runs outside the lock: it is a model call of several milliseconds. The pose is
+        // recorded only once it succeeds, so a failed embedding does not block that pose for good.
+        guard candidate, let embedding = pipeline.recognizer.embedding(of: pixels, face: observation) else { return }
         let report = state.withLock { s -> (@Sendable (Int) -> Void, Int)? in
             guard s.enrolment != nil, !(s.enrolment?.done ?? true) else { return nil }
+            s.enrolment?.filter.record(yawDeg: yaw, pitchDeg: pitch)
             s.enrolment?.embeddings.append(embedding)
             return s.enrolment.map { ($0.progress, $0.embeddings.count) }
         }
@@ -341,13 +381,22 @@ struct EnrolmentFilter {
 
     private(set) var poses: [(yaw: Double, pitch: Double)] = []
 
-    mutating func accept(yawDeg: Double, pitchDeg: Double, quality: Float) -> Bool {
+    /// Whether a frame is worth an embedding. Records nothing: call `record` once the embedding exists.
+    func isCandidate(yawDeg: Double, pitchDeg: Double, quality: Float) -> Bool {
         guard abs(yawDeg) < Self.maxYawDegrees, quality >= Self.minQuality else { return false }
-        let duplicate = poses.contains {
+        return !poses.contains {
             abs($0.yaw - yawDeg) < Self.minPoseSpreadDegrees && abs($0.pitch - pitchDeg) < Self.minPoseSpreadDegrees
         }
-        guard !duplicate else { return false }
+    }
+
+    mutating func record(yawDeg: Double, pitchDeg: Double) {
         poses.append((yawDeg, pitchDeg))
+    }
+
+    /// `isCandidate` then `record`, for a sample whose embedding is already known to succeed.
+    mutating func accept(yawDeg: Double, pitchDeg: Double, quality: Float) -> Bool {
+        guard isCandidate(yawDeg: yawDeg, pitchDeg: pitchDeg, quality: quality) else { return false }
+        record(yawDeg: yawDeg, pitchDeg: pitchDeg)
         return true
     }
 }

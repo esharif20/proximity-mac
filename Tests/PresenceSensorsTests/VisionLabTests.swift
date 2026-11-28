@@ -118,6 +118,15 @@ import Testing
         #expect(filter.poses.count == 3)
     }
 
+    @Test func aCandidateIsNotUsedUpUntilItsEmbeddingIsRecorded() {
+        var filter = EnrolmentFilter()
+        #expect(filter.isCandidate(yawDeg: 0, pitchDeg: 0, quality: 0.8))
+        // The embedding failed, so nothing is recorded and the same pose is still wanted.
+        #expect(filter.isCandidate(yawDeg: 0.5, pitchDeg: 0, quality: 0.8))
+        filter.record(yawDeg: 0.5, pitchDeg: 0)
+        #expect(!filter.isCandidate(yawDeg: 0, pitchDeg: 0, quality: 0.8))
+    }
+
     @Test func aStillFaceGivesOneSampleAndASweepGivesMany() {
         var still = EnrolmentFilter()
         let stillKept = (0..<300).filter { i in
@@ -140,7 +149,51 @@ import Testing
     }
 }
 
+@Suite struct VisionLabCaptureTests {
+    @Test func capturesFourByThreeLikeCameraSource() throws {
+        let formats = [(width: 1920, height: 1080), (width: 1280, height: 720), (width: 640, height: 480),
+                       (width: 960, height: 720), (width: 1760, height: 1328), (width: 320, height: 240)]
+        let index = try #require(VisionLab.captureFormatIndex(formats))
+        #expect(formats[index] == (960, 720))
+    }
+
+    @Test func noFourByThreeFormatFallsBackToThePreset() {
+        #expect(VisionLab.captureFormatIndex([(1280, 720), (1920, 1080)]) == nil)
+    }
+
+    @Test func aCalibrationMadeHereGivesTheSameDistanceInCameraSource() throws {
+        // The same face at 60 cm fills the same share of any 4:3 frame.
+        let labWidth = 960.0
+        let cal = try #require(Distance.calibration(
+            fromFaceWidths: Array(repeating: 0.2 * labWidth, count: 6), imageWidthPx: labWidth, distanceCm: 60))
+        let there = Distance.estimate(faceWidthPx: 0.2 * CameraSource.captureWidthPx, imageWidthPx: CameraSource.captureWidthPx, calibration: cal)
+        #expect(abs(there - 60) < 1e-9)
+    }
+
+    @Test func frameRateIsClampedToFifteenToThirty() throws {
+        func fps(_ ranges: [(min: Double, max: Double)]) throws -> [Double] {
+            let r = try #require(VisionLab.frameRate(ranges: ranges))
+            return [r.min, r.max]
+        }
+        #expect(try fps([(1, 30)]) == [15, 30])
+        #expect(try fps([(2, 60)]) == [15, 30])
+        #expect(try fps([(15, 15)]) == [15, 15])
+        #expect(try fps([(5, 10), (20, 60)]) == [20, 30])
+    }
+
+    @Test func aFormatOutsideTheRangeGetsNoFrameRateChange() {
+        #expect(VisionLab.frameRate(ranges: [(min: 1, max: 10)]) == nil)
+    }
+}
+
 @Suite struct VisionLabLifecycleTests {
+    @Test func stopReturnsWithTheCameraReleased() {
+        let lab = VisionLab()
+        lab.start { _ in }
+        lab.stop()
+        #expect(!lab.hasSession, "the presence camera starts straight after stop()")
+    }
+
     @Test func stopWithoutStartIsSafe() {
         let lab = VisionLab()
         lab.stop()
