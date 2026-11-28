@@ -60,5 +60,6 @@ Proximity Mac v1 is on main: a menu-bar app that turns every screen off when you
 - GH-57 Away screen with glow, the Why line, wiring: d966073, 3d53df7
 - GH-58 BLESource: c1f5669
 - GH-59 Setup phone step, Settings for the phone, Monitors Off and films, README: ec7e6f4
-- Bench: away 4.48% CPU / 133 MB. Checking measured 10.56% / 151.5 MB on a busy Mac (main without GH-55 measured 11.57%); the cause is being profiled.
+- Bench: away 4.48% / 133 MB, checking 4.87% / 144.6 MB after removing the menu-bar pulse (it redrew the status item every 0.4 s), active about 0.10% after polling the mic every 5 s.
 - Not live-tested: Monitors Off on the real displays, the glow, the phone link with a real phone, recognition with a real face.
+- GH-65 DDC standby: both monitors ignore VCP D6=4, so it does not ship (docs/spikes/ddc.md). The person's settings use real display sleep (`keepBuiltInOn = false`) until the display-disconnect route is tested with them.
