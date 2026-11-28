@@ -164,6 +164,8 @@ private struct SetupPanel: View {
             OwnerStep(model: model)
         case .voice:
             VoiceStep(model: model)
+        case .lockScreen:
+            LockDelayNote()
         case .done:
             DoneCard(model: model)
         }
@@ -207,6 +209,7 @@ private struct SetupPanel: View {
         case .bed: "Go to your bed"
         case .owner: "Only wake for me"
         case .voice: "Say \"\(model.coordinator.triggerPhrase), wake up\""
+        case .lockScreen: "Lock screen"
         case .done: "All set"
         }
     }
@@ -220,6 +223,7 @@ private struct SetupPanel: View {
         case .bed: "From here you should not count."
         case .owner: "Optional. Only your face wakes the screens, and voice needs your face."
         case .voice: "Try a Command. It does nothing here."
+        case .lockScreen: "The password prompt on your return comes from macOS, not Proximity Mac."
         case .done: "You can run Setup again from the menu."
         }
     }

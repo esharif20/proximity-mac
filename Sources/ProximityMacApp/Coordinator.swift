@@ -31,6 +31,8 @@ final class Coordinator {
     private(set) var listening = false
     /// The latest distance the camera reported, for the live readout in Settings.
     private(set) var lastDistanceCm: Double?
+    /// The latest frame brightness, so the menu can say it is too dark rather than that no one is there.
+    private(set) var lastBrightness: Double?
     private(set) var isCalibrating = false
     /// The last Command recognised, shown in the menu. The transcript itself is never kept.
     private(set) var lastCommand: Command?
@@ -38,6 +40,15 @@ final class Coordinator {
     private(set) var hasFaceSignature = false
     /// Shown briefly in the menu when a Command was ignored because the Owner was not seen.
     private(set) var voiceNeedsFaceNotice = false
+
+    /// Below this mean brightness Vision cannot find a face. Replace with `CameraSource.darkBrightness`
+    /// once GH-48 lands.
+    static let darkBrightness = 0.08
+
+    var tooDarkToSee: Bool {
+        guard case .away = state, let lastBrightness else { return false }
+        return lastBrightness < Self.darkBrightness
+    }
     let bench: BenchMode?
     /// The menu bar glyph. It redraws itself only when what it shows changes.
     @ObservationIgnored let icon = MenuBarIcon()
@@ -126,6 +137,7 @@ final class Coordinator {
             let observation = bench?.rewrite(observation) ?? observation
             Task { @MainActor in
                 if let distance = observation.distanceCm { self?.lastDistanceCm = distance }
+                if let brightness = observation.brightness { self?.lastBrightness = brightness }
                 self?.send(.observation(observation))
             }
         }

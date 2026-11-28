@@ -25,6 +25,7 @@ struct SettingsView: View {
                 Stepper("Stop watching after \(Int(coordinator.settings.stopWatchingAfterMinutes)) min away",
                         value: $coordinator.settings.stopWatchingAfterMinutes, in: 5...240, step: 5)
                 Toggle("Lock when away", isOn: $coordinator.settings.lockWhenAway)
+                LockDelayNote()
             }
             Section("Distance") {
                 LabeledContent("Distance now", value: coordinator.lastDistanceCm.map { "\(Int($0.rounded())) cm" } ?? "Not seen")
