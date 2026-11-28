@@ -73,3 +73,20 @@ camera during the run; the crop is a small Core Image render not counted above.
 `scripts/bench.sh away 2` with this change and nobody at the desk: 4.25% CPU, 124 MB, PASS, the same as before,
 since no face means no check runs. `--bench-mode` cannot set a signature, so the bench does not cover a check
 running at the desk.
+
+## Motion gate (GH-46)
+
+While watching and checking, a 40x30 luma grid is taken from the 420v Y plane about 8 times a second and compared
+with the previous grid. Vision runs at once when enough cells change (at most 4 passes a second) and on the old 1 per
+2 s (watching) or 1 per 1 s (checking) when nothing moves. Measured on the person's Mac, release build:
+
+| Step | Value |
+| ---- | ----- |
+| Frames delivered in `--bench-mode away` | about 30 per second (not the 15 fps floor noted above) |
+| Locking a frame and sampling the grid | 0.32 ms on average |
+| Motion frames over 37 s with the person at the desk | 17 of 1147 |
+| `scripts/bench.sh away 2`, grid on every frame | 5.02% camera-on CPU, 128 MB, FAIL (budget 5%) |
+| `scripts/bench.sh away 2`, grid 8 times a second | 4.87% camera-on CPU, 130 MB, PASS |
+
+Most of the grid's cost is locking the frame's pixel buffer, not the 4800 reads, which is why it is throttled instead
+of taken on every frame.

@@ -155,6 +155,45 @@ import Testing
         #expect(CameraSource.smallestFormatIndex([]) == nil)
     }
 
+    @Test func motionRunsVisionAtOnceUpToFourTimesASecond() {
+        var schedule = VisionSchedule(mode: .watching)
+        let first = schedule.shouldRun(at: 0, moved: false)
+        #expect(first, "the first frame is a slow sample")
+        // 15 fps of continuous motion for 2 s.
+        let frames = (1...30).map { Double($0) / 15 }
+        let taken = frames.filter { schedule.shouldRun(at: $0, moved: true) }
+        #expect((7...9).contains(taken.count), "about 4 a second (every 4th frame at 15 fps), got \(taken.count)")
+        #expect(taken.first! <= 0.3, "a wave right after a sample is seen within a quarter second")
+    }
+
+    @Test func aStillSceneKeepsTheSlowSample() {
+        var schedule = VisionSchedule(mode: .watching)
+        let frames = (0..<150).map { Double($0) / 15 }
+        let taken = frames.filter { schedule.shouldRun(at: $0, moved: false) }.count
+        #expect((5...6).contains(taken), "one per 2 s over 10 s, give or take the early tolerance")
+    }
+
+    @Test func aMotionPassResetsTheSlowSample() {
+        var schedule = VisionSchedule(mode: .watching)
+        let taken = [(0.0, false), (1, true), (2, false), (3, false)].map { schedule.shouldRun(at: $0, moved: $1) }
+        #expect(taken == [true, true, false, true], "the motion pass at 1 s was the sample, so 2 s is too soon")
+    }
+
+    @Test func offRunsNothingEvenOnMotion() {
+        var schedule = VisionSchedule(mode: .off)
+        let taken = (0..<30).filter { schedule.shouldRun(at: Double($0) / 15, moved: true) }
+        #expect(taken.isEmpty)
+    }
+
+    @Test func brightnessIsReportedWhetherOrNotSomeoneIsSeen() {
+        let nobody = CameraSource.observation(face: nil, bodyWidthPx: nil, imageWidthPx: 640, calibration: nil, brightness: 0.03)
+        #expect(nobody.brightness == 0.03)
+        #expect(!nobody.person)
+        let face = CameraSource.observation(
+            face: Face(widthPx: 120), bodyWidthPx: nil, imageWidthPx: 640, calibration: nil, brightness: 0.4)
+        #expect(face.brightness == 0.4)
+    }
+
     @Test func oneFpsCameraStillGivesEveryCheckingSample() {
         // At the slowest rate there is exactly one frame per checking sample, arriving with jitter.
         var throttle = FrameThrottle(interval: FrameThrottle.interval(for: .checking))
