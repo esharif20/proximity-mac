@@ -148,11 +148,88 @@ import Testing
         #expect(CameraSource.sensorFrameRate(ranges: [], calibrating: false) == nil)
     }
 
+    @Test func watchingLetsAutoExposureStretchFramesDownToTheSlowestRate() throws {
+        // This Mac's external camera: up to 8 fps for the motion gate, down to 1 fps when the room is dark.
+        let external = [(min: 1.0, max: 30.0)]
+        let watching = try #require(CameraSource.frameRates(ranges: external, mode: .watching, calibrating: false))
+        #expect(watching.fastest == CameraSource.motionFrameRate)
+        #expect(watching.slowest == 1)
+        // The built-in camera cannot go below 15 fps, so watching is fixed there.
+        let builtIn = try #require(CameraSource.frameRates(ranges: [(min: 15, max: 30)], mode: .watching, calibrating: false))
+        #expect(builtIn.fastest == 15 && builtIn.slowest == 15)
+    }
+
+    @Test func checkingAndCalibrationKeepAFixedRate() throws {
+        let external = [(min: 1.0, max: 30.0)]
+        let checking = try #require(CameraSource.frameRates(ranges: external, mode: .checking, calibrating: false))
+        #expect(checking.fastest == 1 && checking.slowest == 1)
+        let calibrating = try #require(CameraSource.frameRates(ranges: external, mode: .watching, calibrating: true))
+        #expect(calibrating.fastest == 10 && calibrating.slowest == 10)
+        #expect(CameraSource.frameRates(ranges: [], mode: .watching, calibrating: false) == nil)
+    }
+
+    @Test func tooDarkIsBelowARoomAtNight() {
+        #expect(CameraSource.darkBrightness > 0 && CameraSource.darkBrightness < 0.2)
+    }
+
     @Test func smallestUsableFormatWins() {
         let formats = [(width: 1920, height: 1080, minFps: 1.0), (640, 480, 15), (640, 480, 1), (192, 144, 1), (1280, 720, 1)]
         #expect(CameraSource.smallestFormatIndex(formats) == 2)
         #expect(CameraSource.smallestFormatIndex([(width: 160, height: 120, minFps: 1.0)]) == nil)
         #expect(CameraSource.smallestFormatIndex([]) == nil)
+    }
+
+    @Test func motionRunsVisionAtOnceUpToFourTimesASecond() {
+        var schedule = VisionSchedule(mode: .watching)
+        let first = schedule.shouldRun(at: 0, moved: false) == .still
+        #expect(first, "the first frame is a slow sample")
+        // 15 fps of continuous motion for 2 s.
+        let frames = (1...30).map { Double($0) / 15 }
+        let taken = frames.filter { schedule.shouldRun(at: $0, moved: true) != nil }
+        #expect((7...9).contains(taken.count), "about 4 a second (every 4th frame at 15 fps), got \(taken.count)")
+        #expect(taken.first! <= 0.3, "a wave right after a sample is seen within a quarter second")
+    }
+
+    @Test func aStillSceneKeepsTheSlowSample() {
+        var schedule = VisionSchedule(mode: .watching)
+        let frames = (0..<150).map { Double($0) / 15 }
+        let taken = frames.filter { schedule.shouldRun(at: $0, moved: false) != nil }.count
+        #expect((5...6).contains(taken), "one per 2 s over 10 s, give or take the early tolerance")
+    }
+
+    @Test func aMotionPassResetsTheSlowSample() {
+        var schedule = VisionSchedule(mode: .watching)
+        let taken = [(0.0, false), (1, true), (2, false), (3, false)].map { schedule.shouldRun(at: $0, moved: $1) }
+        #expect(taken == [.still, .motion, nil, .still], "the motion pass at 1 s was the sample, so 2 s is too soon")
+    }
+
+    @Test func motionRefusedByTheCapRunsOnTheNextAllowedFrame() {
+        var schedule = VisionSchedule(mode: .watching)
+        let taken = [(0.0, true), (0.133, true), (0.267, false)].map { schedule.shouldRun(at: $0, moved: $1) }
+        #expect(taken == [.motion, nil, .motion])
+    }
+
+    @Test func motionDuringAnOwnerCheckRunsAfterIt() {
+        var schedule = VisionSchedule(mode: .watching)
+        _ = schedule.shouldRun(at: 0, moved: false)
+        schedule.noteMotion()
+        #expect(schedule.shouldRun(at: 0.3, moved: false) == .motion)
+        #expect(schedule.shouldRun(at: 0.6, moved: false) == nil, "the pending motion was used up")
+    }
+
+    @Test func offRunsNothingEvenOnMotion() {
+        var schedule = VisionSchedule(mode: .off)
+        let taken = (0..<30).filter { schedule.shouldRun(at: Double($0) / 15, moved: true) != nil }
+        #expect(taken.isEmpty)
+    }
+
+    @Test func brightnessIsReportedWhetherOrNotSomeoneIsSeen() {
+        let nobody = CameraSource.observation(face: nil, bodyWidthPx: nil, imageWidthPx: 640, calibration: nil, brightness: 0.03)
+        #expect(nobody.brightness == 0.03)
+        #expect(!nobody.person)
+        let face = CameraSource.observation(
+            face: Face(widthPx: 120), bodyWidthPx: nil, imageWidthPx: 640, calibration: nil, brightness: 0.4)
+        #expect(face.brightness == 0.4)
     }
 
     @Test func oneFpsCameraStillGivesEveryCheckingSample() {

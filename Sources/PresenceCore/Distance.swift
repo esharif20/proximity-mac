@@ -24,6 +24,25 @@ public enum Distance {
         return typicalFaceWidthCm * focalPx / faceWidthPx
     }
 
+    /// Shoulder joint to shoulder joint on an adult, measured between the joint centres that body pose
+    /// reports (narrower than the outside of the shoulders, about 40 cm).
+    static let shoulderJointSpacingCm = 36.0
+    /// Wrist to the middle finger's knuckle on an adult hand.
+    static let handLengthCm = 10.0
+
+    /// Centimetres from the screen, from the spacing of the two shoulder joints.
+    public static func estimate(shoulderWidthPx: Double, imageWidthPx: Double, calibration: Calibration?) -> Double {
+        estimate(faceWidthPx: shoulderWidthPx * typicalFaceWidthCm / shoulderJointSpacingCm,
+                 imageWidthPx: imageWidthPx, calibration: calibration)
+    }
+
+    /// Centimetres from the screen, from the wrist to middle knuckle length. A hand turned away from the
+    /// camera looks shorter and so reads farther, never nearer.
+    public static func estimate(handLengthPx: Double, imageWidthPx: Double, calibration: Calibration?) -> Double {
+        estimate(faceWidthPx: handLengthPx * typicalFaceWidthCm / handLengthCm,
+                 imageWidthPx: imageWidthPx, calibration: calibration)
+    }
+
     /// The median face width over the samples, or nil when there are too few or they disagree too much.
     public static func calibration(fromFaceWidths widths: [Double], imageWidthPx: Double, distanceCm: Double) -> Calibration? {
         guard widths.count >= minCalibrationSamples, imageWidthPx > 0, distanceCm > 0,

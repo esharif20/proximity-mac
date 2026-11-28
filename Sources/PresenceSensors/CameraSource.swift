@@ -4,7 +4,7 @@ import Synchronization
 import Vision
 
 /// The camera as a presence source: a low-resolution capture that runs only while sampling, with Vision
-/// face landmarks and upper-body detection on about one frame a second or less.
+/// face, body pose and hand pose on a few frames a second at most, and only when something moves.
 ///
 /// Frames never leave this file: each one is analysed in memory and dropped, never stored or logged.
 ///
@@ -16,8 +16,14 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
     private struct State {
         var mode = SamplingMode.off
         var throttle = FrameThrottle(interval: nil)
+        var schedule = VisionSchedule(mode: .off)
+        var motion = MotionGate()
+        var gridThrottle = FrameThrottle(interval: nil)
+        /// From the latest grid, at most `gridInterval` old when a sample is taken.
+        var brightness: Double?
         var handler: (@Sendable (Observation) -> Void)?
         var calibration: Calibration?
+        var deskRadiusCm = Settings().deskRadiusCm
         /// Face widths collected while `calibrate()` runs; nil otherwise.
         var calibrationWidths: [Double]?
         /// When calibration saw its first frame, so its 3 s window excludes camera warm-up.
@@ -48,6 +54,12 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         set { state.withLock { $0.calibration = newValue } }
     }
 
+    /// The person's Desk radius, set by the Coordinator from Settings: a hand counts only inside it.
+    public var deskRadiusCm: Double {
+        get { state.withLock { $0.deskRadiusCm } }
+        set { state.withLock { $0.deskRadiusCm = newValue } }
+    }
+
     public func onObservation(_ handler: @escaping @Sendable (Observation) -> Void) {
         state.withLock { $0.handler = handler }
     }
@@ -64,6 +76,10 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         state.withLock { s in
             s.mode = mode
             s.ownerCheck = nil
+            s.schedule = VisionSchedule(mode: mode)
+            s.motion.reset()
+            s.gridThrottle = FrameThrottle(interval: mode == .off ? nil : CameraSource.gridInterval)
+            s.brightness = nil
             if s.calibrationWidths == nil { s.throttle = FrameThrottle(interval: FrameThrottle.interval(for: mode)) }
         }
         reconcile()
@@ -112,18 +128,20 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
     /// was asked for, so a stop and a start racing from two threads always settle on the latest state.
     private func reconcile() {
         sessionQueue.async { [self] in
-            let (running, calibrating) = state.withLock { ($0.wantsCamera, $0.calibrationWidths != nil) }
+            let (running, calibrating, mode) = state.withLock { ($0.wantsCamera, $0.calibrationWidths != nil, $0.mode) }
             if running {
                 if session == nil { session = makeSession() }
                 guard let session else { return }
-                if let device = (session.inputs.first as? AVCaptureDeviceInput)?.device {
-                    Self.setFrameRate(device, calibrating: calibrating)
-                }
                 if !session.isRunning { session.startRunning() }
+                // Set after starting: starting a session can put the device back on its default durations.
+                if let device = (session.inputs.first as? AVCaptureDeviceInput)?.device {
+                    Self.setFrameRate(device, mode: mode, calibrating: calibrating)
+                }
             } else if let session {
                 // Stopping and dropping the session powers the camera down, so the light goes off.
                 session.stopRunning()
                 self.session = nil
+                frameQueue.async { [self] in vision.dropIdlePoses(cameraStopped: true) }
             }
         }
     }
@@ -164,15 +182,35 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         return session
     }
 
-    private static func setFrameRate(_ device: AVCaptureDevice, calibrating: Bool) {
+    private static func setFrameRate(_ device: AVCaptureDevice, mode: SamplingMode, calibrating: Bool) {
         let ranges = device.activeFormat.videoSupportedFrameRateRanges.map { (min: $0.minFrameRate, max: $0.maxFrameRate) }
-        guard let fps = sensorFrameRate(ranges: ranges, calibrating: calibrating),
+        guard let rates = frameRates(ranges: ranges, mode: mode, calibrating: calibrating),
               (try? device.lockForConfiguration()) != nil
         else { return }
-        let duration = CMTime(value: 1000, timescale: CMTimeScale((fps * 1000).rounded()))
-        device.activeVideoMinFrameDuration = duration
-        device.activeVideoMaxFrameDuration = duration
+        func duration(_ fps: Double) -> CMTime { CMTime(value: 1000, timescale: CMTimeScale((fps * 1000).rounded())) }
+        device.activeVideoMinFrameDuration = duration(rates.fastest)
+        device.activeVideoMaxFrameDuration = duration(rates.slowest)
         device.unlockForConfiguration()
+    }
+
+    /// The motion gate checks about 8 frames a second, so watching needs no more than that.
+    static let motionFrameRate = 8.0
+
+    /// Below this `Observation.brightness` the camera cannot see a person, so "nobody seen" means
+    /// "too dark to see you". Not yet tuned from a dark reading: see docs/spikes/display-and-camera.md.
+    public static let darkBrightness = 0.08
+
+    /// The frame rate range to give the device. Watching lets auto exposure stretch frames down to the
+    /// slowest rate the camera allows, so a dim room still gives a usable picture; it runs no faster than
+    /// the motion gate needs. Checking and calibration keep one fixed rate, as before.
+    static func frameRates(
+        ranges: [(min: Double, max: Double)], mode: SamplingMode, calibrating: Bool
+    ) -> (fastest: Double, slowest: Double)? {
+        guard let fixed = sensorFrameRate(ranges: ranges, calibrating: calibrating) else { return nil }
+        guard mode == .watching, !calibrating else { return (fixed, fixed) }
+        let fastest = ranges.contains { $0.min <= motionFrameRate && motionFrameRate <= $0.max }
+            ? motionFrameRate : max(fixed, ranges.filter { $0.max < motionFrameRate }.map(\.max).max() ?? fixed)
+        return (fastest, fixed)
     }
 
     /// Faces stop being found reliably below this width at desk distance.
@@ -201,16 +239,33 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
 
     // MARK: - Frames
 
+    /// About 8 motion checks a second: twice the motion sample rate, so a wave is seen on the next pass.
+    static let gridInterval = 0.125
+
     fileprivate func handle(_ sampleBuffer: CMSampleBuffer) {
         let now = ProcessInfo.processInfo.systemUptime
-        let (take, calibrating, continuing, signature) = state.withLock { s in
+        guard let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        // Locking a frame's pixels costs about 0.3 ms, so the grid is taken on a few frames a second, not all.
+        let wantsGrid = state.withLock { $0.gridThrottle.shouldSample(at: now) }
+        let grid = wantsGrid ? LumaGrid(sampling: pixels) : nil
+        let (take, calibrating, continuing, signature, brightness, moved) = state.withLock { s in
             if s.calibrationWidths != nil, s.calibrationStart == nil { s.calibrationStart = now }
             if let check = s.ownerCheck, check.isStale(at: now) { s.ownerCheck = nil }
+            let moved = grid.map { s.motion.update($0) } ?? false
+            if let grid { s.brightness = grid.brightness }
             // The frames right after a sample finish its owner check, whatever the throttle says.
-            if s.ownerCheck != nil { return (true, false, true, s.signature) }
-            return (s.throttle.shouldSample(at: now), s.calibrationWidths != nil, false, s.signature)
+            if s.ownerCheck != nil {
+                if moved { s.schedule.noteMotion() }
+                return (true, false, true, s.signature, s.brightness, moved)
+            }
+            if s.calibrationWidths != nil {
+                return (s.throttle.shouldSample(at: now), true, false, s.signature, s.brightness, moved)
+            }
+            let pass = s.schedule.shouldRun(at: now, moved: moved)
+            return (pass != nil, false, false, s.signature, s.brightness, pass == .motion)
         }
-        guard take, let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard take else { return }
+        vision.dropIdlePoses(cameraStopped: false)
         let imageWidth = Double(CVPixelBufferGetWidth(pixels))
 
         if continuing, let signature {
@@ -223,10 +278,8 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
 
         guard let face = vision.largestFace(in: pixels, imageWidth: imageWidth) else {
             if calibrating { return }
-            // Bodies only when there is no face: a face already answers "person" and gives a better distance.
-            let bodyWidth = vision.widestUpperBody(in: pixels).map { $0 * imageWidth }
-            let (handler, calibration) = state.withLock { ($0.handler, $0.calibration) }
-            handler?(Self.observation(face: nil, bodyWidthPx: bodyWidth, imageWidthPx: imageWidth, calibration: calibration))
+            let (handler, calibration, desk) = state.withLock { ($0.handler, $0.calibration, $0.deskRadiusCm) }
+            handler?(withoutFace(pixels, moved: moved, calibration: calibration, deskRadiusCm: desk, brightness: brightness))
             return
         }
         if calibrating {
@@ -235,7 +288,7 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         }
         let (handler, calibration) = state.withLock { ($0.handler, $0.calibration) }
         let observation = Self.observation(
-            face: face.measure, bodyWidthPx: nil, imageWidthPx: imageWidth, calibration: calibration)
+            face: face.measure, bodyWidthPx: nil, imageWidthPx: imageWidth, calibration: calibration, brightness: brightness)
         guard let signature, OwnerCheck.wanted(for: observation) else {
             handler?(observation)
             return
@@ -243,6 +296,21 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
         let match = ownerMatches(pixels, face: face.observation, signature: signature)
         state.withLock { $0.ownerCheck = OwnerCheck(observation: observation, started: now) }
         finishOwnerCheck(match)
+    }
+
+    /// Bodies and hands only when there is no face: a face already answers "person" and gives a better distance.
+    private func withoutFace(
+        _ pixels: CVPixelBuffer, moved: Bool, calibration: Calibration?, deskRadiusCm: Double, brightness: Double?
+    ) -> Observation {
+        let imageWidth = Double(CVPixelBufferGetWidth(pixels))
+        let vision = vision
+        return Self.observationWithoutFace(
+            moved: moved,
+            passes: .init(
+                body: { vision.bodyJoints(in: pixels) },
+                box: { vision.widestUpperBody(in: pixels).map { $0 * imageWidth } },
+                hands: { vision.handJoints(in: pixels) }),
+            imageWidthPx: imageWidth, calibration: calibration, deskRadiusCm: deskRadiusCm, brightness: brightness)
     }
 
     /// Records one frame's answer and delivers the held sample once the check has decided.
@@ -287,19 +355,20 @@ public final class CameraSource: PresenceSource, @unchecked Sendable {
     static let farCm = 1000.0
 
     static func observation(
-        face: FaceMeasure?, bodyWidthPx: Double?, imageWidthPx: Double, calibration: Calibration?
+        face: FaceMeasure?, bodyWidthPx: Double?, imageWidthPx: Double, calibration: Calibration?,
+        brightness: Double? = nil
     ) -> Observation {
         guard face != nil || bodyWidthPx != nil else {
-            return Observation(source: .camera, person: false)
+            return Observation(source: .camera, person: false, brightness: brightness)
         }
         let faceEquivalentPx = face?.widthPx ?? (bodyWidthPx ?? 0) * faceToShouldersRatio
         let estimate = Distance.estimate(faceWidthPx: faceEquivalentPx, imageWidthPx: imageWidthPx, calibration: calibration)
-        let distance = estimate.isFinite ? min(max(estimate, 0), farCm) : farCm
+        let distance = clamped(estimate)
         var facing: Bool?
         if let yaw = face?.yawDegrees, let pitch = face?.pitchDegrees {
             facing = abs(yaw) <= maxYawDegrees && abs(pitch) <= maxPitchDegrees
         }
-        return Observation(source: .camera, person: true, distanceCm: distance, facingScreen: facing)
+        return Observation(source: .camera, person: true, distanceCm: distance, facingScreen: facing, brightness: brightness)
     }
 }
 
@@ -340,6 +409,50 @@ extension Calibration {
     static let defaultDistanceCm = 60.0
 }
 
+/// When to run Vision: at once when the scene moves (at most `motionInterval` apart), and on the mode's
+/// slow interval when nothing moves, so someone sitting very still is still seen.
+struct VisionSchedule {
+    /// About 4 passes a second while something moves: a short wave is caught, and the cost stays bounded.
+    static let motionInterval = 0.25
+
+    /// A motion pass runs the body and hand passes too; a still pass only looks for a face and a body box.
+    enum Pass: Equatable { case still, motion }
+
+    private var slow: FrameThrottle
+    private var fast: FrameThrottle
+    /// Motion the cap or an owner check held back. The gate has already moved past those frames, so
+    /// dropping it would lose a short wave; it runs on the first frame the cap allows instead.
+    private var pendingMotion = false
+
+    init(mode: SamplingMode) {
+        slow = FrameThrottle(interval: FrameThrottle.interval(for: mode))
+        fast = FrameThrottle(interval: mode == .off ? nil : Self.motionInterval)
+    }
+
+    /// nil when this frame is skipped.
+    mutating func shouldRun(at now: Double, moved: Bool) -> Pass? {
+        guard slow.interval != nil else { return nil }
+        if moved || pendingMotion {
+            guard fast.shouldSample(at: now) else {
+                pendingMotion = true
+                return nil
+            }
+            pendingMotion = false
+            // A motion pass counts as the slow sample too, so a still scene waits a full interval after it.
+            slow.mark(at: now)
+            return .motion
+        }
+        guard slow.shouldSample(at: now) else { return nil }
+        fast.mark(at: now)
+        return .still
+    }
+
+    /// Motion seen on a frame that went to something else, such as an owner check.
+    mutating func noteMotion() {
+        if slow.interval != nil { pendingMotion = true }
+    }
+}
+
 /// Lets one frame through per interval and drops the rest.
 struct FrameThrottle {
     /// nil means no frames at all.
@@ -368,6 +481,11 @@ struct FrameThrottle {
         last = now
         return true
     }
+
+    /// Records a frame taken for another reason, so the next one waits a full interval from it.
+    mutating func mark(at now: Double) {
+        last = now
+    }
 }
 
 private final class FrameDelegate: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
@@ -383,7 +501,7 @@ private final class FrameDelegate: NSObject, AVCaptureVideoDataOutputSampleBuffe
     }
 }
 
-/// The two Vision requests and one sequence handler, reused for every frame.
+/// The Vision requests and one sequence handler, reused for every frame.
 private final class VisionPipeline {
     private let handler = VNSequenceRequestHandler()
     private let faces: VNDetectFaceRectanglesRequest = {
@@ -397,6 +515,27 @@ private final class VisionPipeline {
         request.upperBodyOnly = true
         return request
     }()
+
+    /// Built on first use and dropped after 30 s without use or when the camera stops, so a camera that
+    /// always finds a face, or a still empty room, does not keep the pose requests and their handler around.
+    private var poses: PoseRequests?
+    private var poseLifetime = PoseLifetime()
+
+    func bodyJoints(in pixels: CVPixelBuffer) -> BodyJoints? { usePoses().bodyJoints(in: pixels) }
+    func handJoints(in pixels: CVPixelBuffer) -> [HandJoints] { usePoses().handJoints(in: pixels) }
+
+    /// Called on every Vision pass and when the camera stops, on `frameQueue` only.
+    func dropIdlePoses(cameraStopped: Bool) {
+        if poseLifetime.shouldDrop(at: ProcessInfo.processInfo.systemUptime, cameraStopped: cameraStopped) { poses = nil }
+    }
+
+    private func usePoses() -> PoseRequests {
+        poseLifetime.used(at: ProcessInfo.processInfo.systemUptime)
+        if let poses { return poses }
+        let made = PoseRequests()
+        poses = made
+        return made
+    }
 
     /// Built on first use, so a Mac without an owner signature never loads the landmarks model.
     private lazy var landmarks = VNDetectFaceLandmarksRequest()
